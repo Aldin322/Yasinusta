@@ -319,11 +319,24 @@ class SacrificeBot:
             bonus += PASSED_PAWN_BONUS[advancement] * (0.5 + endgame_phase)
         return bonus
 
-    def _mobility_term(self, board: chess.Board, color: chess.Color) -> float:
-        temp = board.copy(stack=False)
-        temp.turn = color
-        move_count = sum(1 for _ in temp.legal_moves)
-        return move_count * MOBILITY_WEIGHT
+    def _mobility_term(
+        self,
+        board: chess.Board,
+        attack_masks: Dict[chess.Color, int],
+        color: chess.Color,
+    ) -> float:
+        """Return a light-weight mobility estimate using cached attack masks."""
+
+        # ``board.attacks`` already respects the current occupancy, so the mask
+        # captured during ``evaluate`` encodes every square the pieces of
+        # ``color`` control.  Remove the ones occupied by friendly pieces so we
+        # only count destination squares that represent actual moves (quiet or
+        # capturing) and scale by the historical mobility weight.  This avoids
+        # copying the board and generating a full legal move list for every
+        # evaluation, which previously dominated the search time and prevented
+        # the bot from replying in fast games.
+        mobility_mask = attack_masks[color] & ~board.occupied_co[color]
+        return float(chess.popcount(mobility_mask) * MOBILITY_WEIGHT)
 
     def _pawn_structure_penalty(self, board: chess.Board, color: chess.Color) -> float:
         penalty = 0.0
@@ -461,7 +474,7 @@ class SacrificeBot:
                 + self._rook_file_bonus(board, color)
                 + self._rook_on_seventh_bonus(board, color)
                 + self._passed_pawn_bonus(board, color, endgame_phase)
-                + self._mobility_term(board, color)
+                + self._mobility_term(board, attack_masks, color)
                 + self._king_safety_score(board, color, endgame_phase)
                 + self._outpost_bonus(board, color)
                 + self._center_control_bonus(attack_masks[color], endgame_phase)

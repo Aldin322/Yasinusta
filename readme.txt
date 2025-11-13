@@ -86,7 +86,7 @@ Engine behavior
   kicks in.
 * Scores are reported in centipawns from the side to move's perspective.
 * Evaluation mixes classical piece-square values with bishop-pair rewards,
-  mobility, rook open-file bonuses, king-safety/pawn-shield heuristics, passed
+  bitboard mobility counts, rook open-file bonuses, king-safety/pawn-shield heuristics, passed
   pawns that scale into the endgame, outpost detection for minor pieces,
   bitboard-accelerated center control tracking, space advantages in the enemy
   half, activity bonuses for rooks planted on the seventh rank, development
