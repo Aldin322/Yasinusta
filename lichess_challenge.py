@@ -217,6 +217,30 @@ def _challenge_with_retries(
             time.sleep(wait_time)
 
 
+def _merge_game_metadata(game: Dict, challenge: Optional[Dict], opponent_fallback: str) -> Dict:
+    """Fill any missing opponent/color data in ``game`` using the challenge payload."""
+
+    merged = dict(game)
+    color_hint = None
+    if challenge:
+        color_hint = (challenge.get("finalColor") or challenge.get("color") or "").lower()
+    if not merged.get("color") and color_hint in {"white", "black"}:
+        merged["color"] = color_hint
+
+    opponent_payload = (challenge or {}).get("destUser") or {}
+    challenger_payload = (challenge or {}).get("challenger") or {}
+
+    opponent_id = opponent_payload.get("id") or opponent_fallback
+    if opponent_id and not (merged.get("opponent") or {}).get("id"):
+        merged["opponent"] = {"id": opponent_id}
+
+    my_id = challenger_payload.get("id")
+    if my_id and not (merged.get("me") or {}).get("id"):
+        merged["me"] = {"id": my_id}
+
+    return merged
+
+
 def _wait_for_game(
     token: str,
     challenge_id: str,
@@ -229,31 +253,25 @@ def _wait_for_game(
     start_time = time.time()
     poll_interval = max(1, poll_interval)
     opponent_fallback = opponent
+    last_challenge: Optional[Dict] = None
 
     while True:
         try:
             challenge = _fetch_challenge(token, challenge_id)
+            last_challenge = challenge
         except ChallengeNotFoundError:
             active_game = _locate_active_game(token, opponent_fallback)
             if active_game and active_game.get("id"):
-                return active_game
+                return _merge_game_metadata(active_game, last_challenge, opponent_fallback)
             challenge = None
 
         if challenge:
             status = (challenge.get("status") or "").lower()
 
             if status in {"accepted", "started"}:
-                color = (challenge.get("finalColor") or challenge.get("color") or "").lower()
-                opponent_payload = challenge.get("destUser") or {}
-                opponent_id = opponent_payload.get("id") or opponent_fallback
-                challenger_payload = challenge.get("challenger") or {}
-                my_id = challenger_payload.get("id")
-                return {
-                    "id": challenge_id,
-                    "color": color if color in {"white", "black"} else None,
-                    "opponent": {"id": opponent_id},
-                    "me": {"id": my_id} if my_id else {},
-                }
+                active_game = _locate_active_game(token, opponent_fallback)
+                if active_game and active_game.get("id"):
+                    return _merge_game_metadata(active_game, challenge, opponent_fallback)
 
             if status in {"declined", "canceled"}:
                 raise RuntimeError(f"Challenge {status} by {opponent} before the game started")
