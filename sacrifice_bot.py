@@ -295,7 +295,7 @@ class SacrificeBot:
         alpha = -math.inf
         beta = math.inf
 
-        tt_entry = self._tt.get(board.transposition_key())
+        tt_entry = self._tt.get(board.zobrist_hash())
         pv_move = self._principal_variation[0] if self._principal_variation else None
         for move in self._order_moves(
             board,
@@ -339,7 +339,7 @@ class SacrificeBot:
         if depth == 0:
             return self._quiescence(board, alpha, beta, quiescence_level)
 
-        key = board.transposition_key()
+        key = board.zobrist_hash()
         entry = self._tt.get(key)
         tt_move = entry.move if entry else None
         alpha_orig = alpha
@@ -495,7 +495,7 @@ class SacrificeBot:
         self._principal_variation.clear()
         probe = board.copy()
         for _ in range(self.depth * 2):
-            entry = self._tt.get(probe.transposition_key())
+            entry = self._tt.get(probe.zobrist_hash())
             if not entry or entry.move is None:
                 break
             move = entry.move
