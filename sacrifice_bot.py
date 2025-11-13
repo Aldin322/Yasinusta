@@ -138,6 +138,8 @@ BACKWARD_PAWN_PENALTY = 14
 OUTPOST_BONUS = 22
 CENTER_CONTROL_BONUS = 4
 MINOR_DEVELOPMENT_PENALTY = 16
+ROOK_ON_SEVENTH_BONUS = 18
+SPACE_ADVANTAGE_BONUS = 2
 DEVELOPMENT_SQUARES = {
     chess.WHITE: {
         chess.KNIGHT: (chess.B1, chess.G1),
@@ -166,6 +168,11 @@ EXTENDED_CENTER = chess.SquareSet(
     | chess.BB_E6
     | chess.BB_F6
 )
+EXTENDED_CENTER_MASK = int(EXTENDED_CENTER)
+SPACE_HALF_MASK = {
+    chess.WHITE: chess.BB_RANK_5 | chess.BB_RANK_6 | chess.BB_RANK_7 | chess.BB_RANK_8,
+    chess.BLACK: chess.BB_RANK_1 | chess.BB_RANK_2 | chess.BB_RANK_3 | chess.BB_RANK_4,
+}
 
 
 class SearchTimeout(Exception):
@@ -368,12 +375,38 @@ class SacrificeBot:
                     bonus += OUTPOST_BONUS
         return bonus
 
-    def _center_control_bonus(self, board: chess.Board, color: chess.Color) -> float:
-        control = 0
-        for square in EXTENDED_CENTER:
-            if board.is_attacked_by(color, square):
-                control += CENTER_CONTROL_BONUS
-        return float(control)
+    def _attack_masks(self, board: chess.Board) -> Dict[chess.Color, int]:
+        masks = {chess.WHITE: 0, chess.BLACK: 0}
+        for square, piece in board.piece_map().items():
+            masks[piece.color] |= int(board.attacks(square))
+        return masks
+
+    def _center_control_bonus(self, attack_mask: int, endgame_phase: float) -> float:
+        controlled = chess.popcount(attack_mask & EXTENDED_CENTER_MASK)
+        weight = 0.5 + 0.5 * (1.0 - endgame_phase)
+        return float(controlled * CENTER_CONTROL_BONUS * weight)
+
+    def _space_bonus(
+        self,
+        attack_masks: Dict[chess.Color, int],
+        color: chess.Color,
+        occupied_mask: int,
+        endgame_phase: float,
+    ) -> float:
+        mask = attack_masks[color] & SPACE_HALF_MASK[color]
+        empty_mask = (~occupied_mask) & chess.BB_ALL
+        mask &= empty_mask
+        uncontested = mask & ~attack_masks[not color]
+        weight = 1.0 - 0.7 * endgame_phase
+        return float(chess.popcount(uncontested) * SPACE_ADVANTAGE_BONUS * weight)
+
+    def _rook_on_seventh_bonus(self, board: chess.Board, color: chess.Color) -> float:
+        target_rank = 6 if color == chess.WHITE else 1
+        bonus = 0.0
+        for square in board.pieces(chess.ROOK, color):
+            if chess.square_rank(square) == target_rank:
+                bonus += ROOK_ON_SEVENTH_BONUS
+        return bonus
 
     def _development_penalty(
         self, board: chess.Board, color: chess.Color, endgame_phase: float
@@ -416,6 +449,8 @@ class SacrificeBot:
         """Return a centipawn evaluation from White's perspective."""
 
         endgame_phase = self._game_phase(board)
+        attack_masks = self._attack_masks(board)
+        occupied_mask = board.occupied_co[chess.WHITE] | board.occupied_co[chess.BLACK]
         score = 0.0
         for color in (chess.WHITE, chess.BLACK):
             sign = 1 if color == chess.WHITE else -1
@@ -424,11 +459,13 @@ class SacrificeBot:
             extras = (
                 self._bishop_pair_bonus(board, color)
                 + self._rook_file_bonus(board, color)
+                + self._rook_on_seventh_bonus(board, color)
                 + self._passed_pawn_bonus(board, color, endgame_phase)
                 + self._mobility_term(board, color)
                 + self._king_safety_score(board, color, endgame_phase)
                 + self._outpost_bonus(board, color)
-                + self._center_control_bonus(board, color)
+                + self._center_control_bonus(attack_masks[color], endgame_phase)
+                + self._space_bonus(attack_masks, color, occupied_mask, endgame_phase)
                 - self._pawn_structure_penalty(board, color)
                 - self._development_penalty(board, color, endgame_phase)
             )
