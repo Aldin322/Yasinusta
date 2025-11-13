@@ -17,8 +17,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
 import time
-from typing import Dict, Iterable, Iterator, Optional, Tuple
+from typing import Dict, Iterable, Iterator, Optional, Set, Tuple
 
 import chess
 import requests
@@ -27,6 +28,7 @@ from sacrifice_bot import SacrificeBot
 
 
 LICHESS_API = "https://lichess.org"
+FALLBACK_MOVE_TIME_MS = 1500
 
 
 def _auth_headers(token: str) -> Dict[str, str]:
@@ -97,6 +99,28 @@ def _stream_json_events(response: requests.Response) -> Iterator[Dict]:
             raise RuntimeError(f"Malformed trailing SSE payload from Lichess: {buffer}") from exc
 
 
+def _fetch_account_id(token: str) -> str:
+    """Return the bot account's user ID for reliably inferring our color."""
+
+    response = requests.get(
+        f"{LICHESS_API}/api/account",
+        headers=_auth_headers(token),
+        timeout=15,
+    )
+    response.raise_for_status()
+    try:
+        payload = response.json()
+    except ValueError as exc:  # pragma: no cover - defensive
+        raise RuntimeError(
+            "Unexpected response from Lichess while fetching the bot profile"
+        ) from exc
+
+    account_id = (payload.get("id") or "").strip()
+    if not account_id:
+        raise RuntimeError("Unable to determine the bot account ID from /api/account")
+    return account_id
+
+
 def _challenge_player(
     token: str,
     opponent: str,
@@ -133,6 +157,15 @@ def _challenge_player(
             + (f": {error_message}" if error_message else f". Full response: {payload}")
         )
     return challenge
+
+
+def _accept_challenge(token: str, challenge_id: str) -> None:
+    response = requests.post(
+        f"{LICHESS_API}/api/challenge/{challenge_id}/accept",
+        headers=_auth_headers(token),
+        timeout=15,
+    )
+    response.raise_for_status()
 
 
 def _extract_challenge(payload: Dict) -> Optional[Dict]:
@@ -236,9 +269,99 @@ def _challenge_with_retries(
             attempts += 1
             if attempts > max(0, retries):
                 raise
-            wait_time = max(1, retry_wait)
-            print(f"Challenge attempt {attempts} failed: {exc}. Retrying in {wait_time}s...")
+            wait_time = _retry_delay_for_exception(exc, retry_wait, attempts)
+            rate_limit_note = ""
+            if _is_rate_limit_error(exc):
+                rate_limit_note = " (Lichess rate-limited the request)"
+            print(
+                f"Challenge attempt {attempts} failed{rate_limit_note}: {exc}. Retrying in {wait_time}s..."
+            )
             time.sleep(wait_time)
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    return isinstance(exc, requests.HTTPError) and getattr(exc, "response", None) is not None and exc.response.status_code == 429
+
+
+def _retry_delay_for_exception(exc: BaseException, base_wait: int, attempts: int) -> int:
+    wait_time = max(1, base_wait)
+    if not isinstance(exc, requests.HTTPError):
+        return wait_time
+
+    response = getattr(exc, "response", None)
+    if response is None or response.status_code != 429:
+        return wait_time
+
+    retry_after_header = response.headers.get("Retry-After") if response.headers else None
+    parsed_wait: Optional[int] = None
+    if retry_after_header:
+        try:
+            parsed_wait = int(float(retry_after_header))
+        except ValueError:
+            parsed_wait = None
+
+    if parsed_wait is not None:
+        wait_time = max(wait_time, parsed_wait)
+    else:
+        wait_time = max(wait_time, base_wait * (attempts + 1))
+
+    return wait_time
+
+
+def _auto_accept_incoming_challenges(token: str, stop_event: threading.Event) -> None:
+    """Continuously accept every inbound challenge directed at the bot account."""
+
+    accepted_ids: Set[str] = set()
+    while not stop_event.is_set():
+        try:
+            with requests.get(
+                f"{LICHESS_API}/api/stream/event",
+                headers=_auth_headers(token),
+                stream=True,
+                timeout=(10, 15),
+            ) as response:
+                response.raise_for_status()
+                print("Listening for incoming challenges to auto-accept...")
+                for event in _stream_json_events(response):
+                    if stop_event.is_set():
+                        return
+                    if event.get("type") != "challenge":
+                        continue
+                    challenge = event.get("challenge") or {}
+                    direction = (challenge.get("direction") or "").lower()
+                    if direction not in {"in", "incoming"}:
+                        continue
+                    challenge_id = challenge.get("id")
+                    if not challenge_id or challenge_id in accepted_ids:
+                        continue
+                    challenger = (
+                        (challenge.get("challenger") or {}).get("name")
+                        or (challenge.get("challenger") or {}).get("id")
+                        or "unknown"
+                    )
+                    try:
+                        _accept_challenge(token, challenge_id)
+                        accepted_ids.add(challenge_id)
+                        print(
+                            f"Accepted incoming challenge {challenge_id} from {challenger}."
+                        )
+                    except requests.RequestException as exc:
+                        print(
+                            f"Failed to accept challenge {challenge_id} from {challenger}: {exc}"
+                        )
+        except requests.Timeout:
+            if stop_event.is_set():
+                return
+            print(
+                "Incoming challenge stream timed out waiting for data. Reconnecting..."
+            )
+        except requests.RequestException as exc:
+            if stop_event.is_set():
+                return
+            print(
+                f"Incoming challenge stream error: {exc}. Reconnecting in 3s..."
+            )
+            time.sleep(3)
 
 
 def _merge_game_metadata(game: Dict, challenge: Optional[Dict], opponent_fallback: str) -> Dict:
@@ -421,7 +544,13 @@ def _drive_game(
             my_time = int(my_time_raw) if my_time_raw is not None else None
             my_increment = int(my_increment_raw) if my_increment_raw is not None else 0
 
-            search_result = bot.choose(board, my_time, my_increment)
+            time_budget = my_time
+            increment = my_increment
+            if time_budget is None:
+                time_budget = FALLBACK_MOVE_TIME_MS
+                increment = 0
+
+            search_result = bot.choose(board, time_budget, increment)
             if not search_result.move:
                 raise RuntimeError("No legal move found for the current position")
             _submit_move(token, game_id, search_result.move)
@@ -461,7 +590,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser.add_argument("--clock", type=int, default=5, help="Base time in minutes")
     parser.add_argument("--increment", type=int, default=3, help="Increment in seconds")
     parser.add_argument("--rated", action="store_true", help="Play a rated game instead of casual")
-    parser.add_argument("--depth", type=int, default=3, help="Search depth for SacrificeBot")
+    parser.add_argument("--depth", type=int, default=16, help="Search depth for SacrificeBot")
     parser.add_argument(
         "--sacrifice-margin",
         type=int,
@@ -496,8 +625,26 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     if not token:
         raise SystemExit("Please supply --token or set the LICHESS_TOKEN environment variable")
 
+    try:
+        bot_account_id = _fetch_account_id(token)
+    except (requests.RequestException, RuntimeError) as exc:
+        print(
+            "Warning: unable to query /api/account to learn the bot user ID. "
+            "Color detection will rely on board events only."
+        )
+        print(f"Details: {exc}")
+        bot_account_id = None
+
     bot = SacrificeBot(depth=args.depth, sacrifice_margin=args.sacrifice_margin)
     total_games = max(1, args.games)
+
+    stop_event = threading.Event()
+    auto_accept_thread = threading.Thread(
+        target=_auto_accept_incoming_challenges,
+        args=(token, stop_event),
+        daemon=True,
+    )
+    auto_accept_thread.start()
 
     for game_index in range(total_games):
         print(f"=== Match {game_index + 1}/{total_games} ===")
@@ -536,13 +683,12 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
                 f"Challenge {challenge_id} accepted. Expecting to play as {'White' if my_color_hint == chess.WHITE else 'Black'} once the board stream opens..."
             )
 
-        my_user_id = (game.get("me") or {}).get("id")
         final_state, resolved_color = _drive_game(
             token,
             game["id"],
             my_color_hint,
             bot,
-            my_user_id=my_user_id,
+            my_user_id=bot_account_id,
         )
         print(_summarize_game_outcome(final_state, resolved_color))
         print("Game finished.")
@@ -552,6 +698,9 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
             if pause:
                 print(f"Waiting {pause}s before issuing the next challenge...")
                 time.sleep(pause)
+
+    stop_event.set()
+    auto_accept_thread.join(timeout=1)
 
 
 if __name__ == "__main__":

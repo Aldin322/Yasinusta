@@ -3,9 +3,8 @@ Sacrifice Bot
 
 This repository contains a lightweight chess engine that can be used as the
 brain for a Lichess bot account.  The main entry point is ``sacrifice_bot.py``
-which runs a conventional alpha-beta search and evaluates positions using
-material, piece-square tables, mobility, rook-file awareness, king safety, pawn
-structure, and passed-pawn heuristics.  When multiple lines score roughly the same, the bot
+which runs a conventional alpha-beta search and evaluates positions using a
+straightforward material count for each side.  When multiple lines score roughly the same, the bot
 picks the one where it gives up more of its own material – effectively choosing
 the most sacrificial winning continuation.
 
@@ -14,7 +13,7 @@ Getting started
 
 1. Create and activate a Python 3.11+ virtual environment.
 2. Install dependencies: ``pip install -r requirements.txt``.
-3. Run a sample search from the initial position (depth 4 by default):
+3. Run a sample search from the initial position (depth 16 by default):
 
    ``python sacrifice_bot.py``
 
@@ -45,6 +44,20 @@ The script expects your bot token via either the optional positional argument
 ``LICHESS_TOKEN`` environment variable and drives the full game via the Bot API
 once the opponent accepts.  Use ``--depth`` and ``--sacrifice-margin`` if you
 want to tweak the engine parameters, and pass ``--rated`` to play rated games.
+While the helper is running it now opens the account event stream and accepts
+every inbound challenge automatically, so if someone else pings your bot while
+you're busy challenging ``aldin07`` the match still starts immediately without
+manual clicks.  If Lichess omits the ``wtime``/``btime`` fields for an update
+(something that can happen for the very first move), the helper now falls back
+to a 1.5 second budget so SacrificeBot still responds immediately instead of
+thinking forever.  Before the helper sends the challenge it also pings
+``/api/account`` to learn your bot's exact user ID, guaranteeing that the board
+stream can always tell whether you're playing as White or Black and preventing
+the "my color is unknown so I never move" failure mode.  If that profile lookup
+fails (for example because your token lacks the ``account:read`` scope), the
+helper simply logs a warning and falls back to inferring the color from the
+first board update, so the challenge still gets sent instead of aborting before
+the match even begins.
 If Lichess rejects the challenge, the CLI now prints the exact error reported by
 the API instead of crashing with a ``KeyError``, and it understands both of the
 slightly different JSON shapes that the challenge endpoint can return.  After a
@@ -60,9 +73,12 @@ For repeated sparring, supply
 ``--games`` to automatically re-challenge the same opponent, ``--challenge-retries``
 to keep retrying when the player is busy, ``--retry-wait`` to control how long to
 wait between those retries, and ``--pause-between-games`` to control how long the
-script waits before the next challenge.  Each finished game now prints a short
-summary (win/loss/draw, end status, and move count) so you can quickly confirm
-that the bot performed as expected.
+script waits before the next challenge.  If Lichess ever responds with HTTP 429
+while you're issuing back-to-back challenges, the helper now respects the
+``Retry-After`` hint (or exponentially increases the wait) before retrying so you
+don't keep hammering the API.  Each finished game now prints a short summary
+(win/loss/draw, end status, and move count) so you can quickly confirm that the
+bot performed as expected.
 
 Engine behavior
 ---------------
@@ -85,12 +101,9 @@ Engine behavior
   the bot plays principled developing moves instantly before the heavy search
   kicks in.
 * Scores are reported in centipawns from the side to move's perspective.
-* Evaluation mixes classical piece-square values with bishop-pair rewards,
-  mobility, rook open-file bonuses, king-safety/pawn-shield heuristics, passed
-  pawns that scale into the endgame, outpost detection for minor pieces, center
-  control tracking, and doubled/isolated/backward pawn penalties so the search
-  understands complex middlegame structures instead of dropping material to
-  simple positional cues.
+* Evaluation is intentionally simple and only compares the total material each
+  side currently has on the board.  This keeps the search behavior predictable
+  while focusing the "sacrifice" bias purely on trades of pieces and pawns.
 * The ``sacrifice_margin`` argument controls how close two moves must score for
   the engine to prefer the line that gives up more of its own material.
 * Iterative deepening now rides on top of aspiration windows, null-move

@@ -137,6 +137,20 @@ ISOLATED_PAWN_PENALTY = 18
 BACKWARD_PAWN_PENALTY = 14
 OUTPOST_BONUS = 22
 CENTER_CONTROL_BONUS = 4
+MINOR_DEVELOPMENT_PENALTY = 16
+ROOK_ON_SEVENTH_BONUS = 18
+SPACE_ADVANTAGE_BONUS = 2
+KING_RING_ATTACK_WEIGHT = 6
+DEVELOPMENT_SQUARES = {
+    chess.WHITE: {
+        chess.KNIGHT: (chess.B1, chess.G1),
+        chess.BISHOP: (chess.C1, chess.F1),
+    },
+    chess.BLACK: {
+        chess.KNIGHT: (chess.B8, chess.G8),
+        chess.BISHOP: (chess.C8, chess.F8),
+    },
+}
 EXTENDED_CENTER = chess.SquareSet(
     chess.BB_C3
     | chess.BB_D3
@@ -155,6 +169,11 @@ EXTENDED_CENTER = chess.SquareSet(
     | chess.BB_E6
     | chess.BB_F6
 )
+EXTENDED_CENTER_MASK = int(EXTENDED_CENTER)
+SPACE_HALF_MASK = {
+    chess.WHITE: chess.BB_RANK_5 | chess.BB_RANK_6 | chess.BB_RANK_7 | chess.BB_RANK_8,
+    chess.BLACK: chess.BB_RANK_1 | chess.BB_RANK_2 | chess.BB_RANK_3 | chess.BB_RANK_4,
+}
 
 
 class SearchTimeout(Exception):
@@ -180,7 +199,7 @@ class TTEntry:
 class SacrificeBot:
     """A chess searcher that prefers sacrificing material when advantageous."""
 
-    def __init__(self, depth: int = 4, sacrifice_margin: int = 40, quiescence_depth: int = 6) -> None:
+    def __init__(self, depth: int = 16, sacrifice_margin: int = 40, quiescence_depth: int = 6) -> None:
         """Create a new bot.
 
         Args:
@@ -301,11 +320,24 @@ class SacrificeBot:
             bonus += PASSED_PAWN_BONUS[advancement] * (0.5 + endgame_phase)
         return bonus
 
-    def _mobility_term(self, board: chess.Board, color: chess.Color) -> float:
-        temp = board.copy(stack=False)
-        temp.turn = color
-        move_count = sum(1 for _ in temp.legal_moves)
-        return move_count * MOBILITY_WEIGHT
+    def _mobility_term(
+        self,
+        board: chess.Board,
+        attack_masks: Dict[chess.Color, int],
+        color: chess.Color,
+    ) -> float:
+        """Return a light-weight mobility estimate using cached attack masks."""
+
+        # ``board.attacks`` already respects the current occupancy, so the mask
+        # captured during ``evaluate`` encodes every square the pieces of
+        # ``color`` control.  Remove the ones occupied by friendly pieces so we
+        # only count destination squares that represent actual moves (quiet or
+        # capturing) and scale by the historical mobility weight.  This avoids
+        # copying the board and generating a full legal move list for every
+        # evaluation, which previously dominated the search time and prevented
+        # the bot from replying in fast games.
+        mobility_mask = attack_masks[color] & ~board.occupied_co[color]
+        return float(chess.popcount(mobility_mask) * MOBILITY_WEIGHT)
 
     def _pawn_structure_penalty(self, board: chess.Board, color: chess.Color) -> float:
         penalty = 0.0
@@ -357,13 +389,63 @@ class SacrificeBot:
                     bonus += OUTPOST_BONUS
         return bonus
 
-    def _center_control_bonus(self, board: chess.Board, color: chess.Color) -> float:
-        control = 0
-        for square in EXTENDED_CENTER:
-            piece = board.piece_at(square)
-            if piece and piece.color == color:
-                control += CENTER_CONTROL_BONUS
-        return float(control)
+    def _attack_masks(self, board: chess.Board) -> Dict[chess.Color, int]:
+        masks = {chess.WHITE: 0, chess.BLACK: 0}
+        for square, piece in board.piece_map().items():
+            masks[piece.color] |= int(board.attacks(square))
+        return masks
+
+    def _center_control_bonus(self, attack_mask: int, endgame_phase: float) -> float:
+        controlled = chess.popcount(attack_mask & EXTENDED_CENTER_MASK)
+        weight = 0.5 + 0.5 * (1.0 - endgame_phase)
+        return float(controlled * CENTER_CONTROL_BONUS * weight)
+
+    def _space_bonus(
+        self,
+        attack_masks: Dict[chess.Color, int],
+        color: chess.Color,
+        occupied_mask: int,
+        endgame_phase: float,
+    ) -> float:
+        mask = attack_masks[color] & SPACE_HALF_MASK[color]
+        empty_mask = (~occupied_mask) & chess.BB_ALL
+        mask &= empty_mask
+        uncontested = mask & ~attack_masks[not color]
+        weight = 1.0 - 0.7 * endgame_phase
+        return float(chess.popcount(uncontested) * SPACE_ADVANTAGE_BONUS * weight)
+
+    def _rook_on_seventh_bonus(self, board: chess.Board, color: chess.Color) -> float:
+        target_rank = 6 if color == chess.WHITE else 1
+        bonus = 0.0
+        for square in board.pieces(chess.ROOK, color):
+            if chess.square_rank(square) == target_rank:
+                bonus += ROOK_ON_SEVENTH_BONUS
+        return bonus
+
+    def _king_ring_attack_bonus(
+        self, board: chess.Board, attack_masks: Dict[chess.Color, int], color: chess.Color
+    ) -> float:
+        target_color = not color
+        king_square = board.king(target_color)
+        if king_square is None:
+            return 0.0
+        ring_mask = chess.BB_KING_ATTACKS[king_square] | chess.BB_SQUARES[king_square]
+        attacks = attack_masks[color] & ring_mask
+        return float(chess.popcount(attacks) * KING_RING_ATTACK_WEIGHT)
+
+    def _development_penalty(
+        self, board: chess.Board, color: chess.Color, endgame_phase: float
+    ) -> float:
+        weight = 1.0 - endgame_phase
+        if weight <= 0:
+            return 0.0
+        penalty = 0.0
+        for piece_type, squares in DEVELOPMENT_SQUARES[color].items():
+            for square in squares:
+                piece = board.piece_at(square)
+                if piece and piece.color == color and piece.piece_type == piece_type:
+                    penalty += MINOR_DEVELOPMENT_PENALTY
+        return penalty * weight
 
     def _king_safety_score(self, board: chess.Board, color: chess.Color, endgame_phase: float) -> float:
         king_square = board.king(color)
@@ -391,24 +473,9 @@ class SacrificeBot:
     def evaluate_white(self, board: chess.Board) -> float:
         """Return a centipawn evaluation from White's perspective."""
 
-        endgame_phase = self._game_phase(board)
-        score = 0.0
-        for color in (chess.WHITE, chess.BLACK):
-            sign = 1 if color == chess.WHITE else -1
-            material = self._material_score(board, color)
-            positional = self._piece_square_score(board, color, endgame_phase)
-            extras = (
-                self._bishop_pair_bonus(board, color)
-                + self._rook_file_bonus(board, color)
-                + self._passed_pawn_bonus(board, color, endgame_phase)
-                + self._mobility_term(board, color)
-                + self._king_safety_score(board, color, endgame_phase)
-                + self._outpost_bonus(board, color)
-                + self._center_control_bonus(board, color)
-                - self._pawn_structure_penalty(board, color)
-            )
-            score += sign * (material + positional + extras)
-        return score
+        white_material = self._material_score(board, chess.WHITE)
+        black_material = self._material_score(board, chess.BLACK)
+        return float(white_material - black_material)
 
     def evaluate(self, board: chess.Board) -> float:
         score = self.evaluate_white(board)
@@ -972,7 +1039,7 @@ class SacrificeBot:
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sacrifice-preferring chess searcher")
     parser.add_argument("fen", nargs="?", default=chess.STARTING_FEN, help="FEN string for the position")
-    parser.add_argument("--depth", type=int, default=4, help="Search depth in plies")
+    parser.add_argument("--depth", type=int, default=16, help="Search depth in plies")
     parser.add_argument(
         "--moves",
         nargs="*",
