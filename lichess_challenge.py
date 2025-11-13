@@ -17,8 +17,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
 import time
-from typing import Dict, Iterable, Iterator, Optional, Tuple
+from typing import Dict, Iterable, Iterator, Optional, Set, Tuple
 
 import chess
 import requests
@@ -156,6 +157,15 @@ def _challenge_player(
             + (f": {error_message}" if error_message else f". Full response: {payload}")
         )
     return challenge
+
+
+def _accept_challenge(token: str, challenge_id: str) -> None:
+    response = requests.post(
+        f"{LICHESS_API}/api/challenge/{challenge_id}/accept",
+        headers=_auth_headers(token),
+        timeout=15,
+    )
+    response.raise_for_status()
 
 
 def _extract_challenge(payload: Dict) -> Optional[Dict]:
@@ -296,6 +306,62 @@ def _retry_delay_for_exception(exc: BaseException, base_wait: int, attempts: int
         wait_time = max(wait_time, base_wait * (attempts + 1))
 
     return wait_time
+
+
+def _auto_accept_incoming_challenges(token: str, stop_event: threading.Event) -> None:
+    """Continuously accept every inbound challenge directed at the bot account."""
+
+    accepted_ids: Set[str] = set()
+    while not stop_event.is_set():
+        try:
+            with requests.get(
+                f"{LICHESS_API}/api/stream/event",
+                headers=_auth_headers(token),
+                stream=True,
+                timeout=(10, 15),
+            ) as response:
+                response.raise_for_status()
+                print("Listening for incoming challenges to auto-accept...")
+                for event in _stream_json_events(response):
+                    if stop_event.is_set():
+                        return
+                    if event.get("type") != "challenge":
+                        continue
+                    challenge = event.get("challenge") or {}
+                    direction = (challenge.get("direction") or "").lower()
+                    if direction != "in":
+                        continue
+                    challenge_id = challenge.get("id")
+                    if not challenge_id or challenge_id in accepted_ids:
+                        continue
+                    challenger = (
+                        (challenge.get("challenger") or {}).get("name")
+                        or (challenge.get("challenger") or {}).get("id")
+                        or "unknown"
+                    )
+                    try:
+                        _accept_challenge(token, challenge_id)
+                        accepted_ids.add(challenge_id)
+                        print(
+                            f"Accepted incoming challenge {challenge_id} from {challenger}."
+                        )
+                    except requests.RequestException as exc:
+                        print(
+                            f"Failed to accept challenge {challenge_id} from {challenger}: {exc}"
+                        )
+        except requests.Timeout:
+            if stop_event.is_set():
+                return
+            print(
+                "Incoming challenge stream timed out waiting for data. Reconnecting..."
+            )
+        except requests.RequestException as exc:
+            if stop_event.is_set():
+                return
+            print(
+                f"Incoming challenge stream error: {exc}. Reconnecting in 3s..."
+            )
+            time.sleep(3)
 
 
 def _merge_game_metadata(game: Dict, challenge: Optional[Dict], opponent_fallback: str) -> Dict:
@@ -572,6 +638,14 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     bot = SacrificeBot(depth=args.depth, sacrifice_margin=args.sacrifice_margin)
     total_games = max(1, args.games)
 
+    stop_event = threading.Event()
+    auto_accept_thread = threading.Thread(
+        target=_auto_accept_incoming_challenges,
+        args=(token, stop_event),
+        daemon=True,
+    )
+    auto_accept_thread.start()
+
     for game_index in range(total_games):
         print(f"=== Match {game_index + 1}/{total_games} ===")
         print(f"Challenging {args.opponent} for a {args.clock}+{args.increment} game...")
@@ -624,6 +698,9 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
             if pause:
                 print(f"Waiting {pause}s before issuing the next challenge...")
                 time.sleep(pause)
+
+    stop_event.set()
+    auto_accept_thread.join(timeout=1)
 
 
 if __name__ == "__main__":

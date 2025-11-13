@@ -44,17 +44,20 @@ The script expects your bot token via either the optional positional argument
 ``LICHESS_TOKEN`` environment variable and drives the full game via the Bot API
 once the opponent accepts.  Use ``--depth`` and ``--sacrifice-margin`` if you
 want to tweak the engine parameters, and pass ``--rated`` to play rated games.
-If Lichess omits the ``wtime``/``btime`` fields for an update (something that
-can happen for the very first move), the helper now falls back to a 1.5 second
-budget so SacrificeBot still responds immediately instead of thinking forever.
-Before the helper sends the challenge it also pings ``/api/account`` to learn
-your bot's exact user ID, guaranteeing that the board stream can always tell
-whether you're playing as White or Black and preventing the "my color is
-unknown so I never move" failure mode.  If that profile lookup fails (for
-example because your token lacks the ``account:read`` scope), the helper simply
-logs a warning and falls back to inferring the color from the first board
-update, so the challenge still gets sent instead of aborting before the match
-even begins.
+While the helper is running it now opens the account event stream and accepts
+every inbound challenge automatically, so if someone else pings your bot while
+you're busy challenging ``aldin07`` the match still starts immediately without
+manual clicks.  If Lichess omits the ``wtime``/``btime`` fields for an update
+(something that can happen for the very first move), the helper now falls back
+to a 1.5 second budget so SacrificeBot still responds immediately instead of
+thinking forever.  Before the helper sends the challenge it also pings
+``/api/account`` to learn your bot's exact user ID, guaranteeing that the board
+stream can always tell whether you're playing as White or Black and preventing
+the "my color is unknown so I never move" failure mode.  If that profile lookup
+fails (for example because your token lacks the ``account:read`` scope), the
+helper simply logs a warning and falls back to inferring the color from the
+first board update, so the challenge still gets sent instead of aborting before
+the match even begins.
 If Lichess rejects the challenge, the CLI now prints the exact error reported by
 the API instead of crashing with a ``KeyError``, and it understands both of the
 slightly different JSON shapes that the challenge endpoint can return.  After a
