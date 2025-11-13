@@ -36,7 +36,8 @@ your bot account without wiring up the entire ``lichess-bot`` project, run the
 
 ``python lichess_challenge.py --opponent aldin07 --clock 5 --increment 3``
 
-The script expects your bot token via the ``--token`` flag or the
+The script expects your bot token via either the optional positional argument
+(place it right after the script name), the ``--token`` flag, or the
 ``LICHESS_TOKEN`` environment variable and drives the full game via the Bot API
 once the opponent accepts.  Use ``--depth`` and ``--sacrifice-margin`` if you
 want to tweak the engine parameters, and pass ``--rated`` to play rated games.

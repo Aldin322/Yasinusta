@@ -231,6 +231,7 @@ def _summarize_game_outcome(state: Optional[Dict], my_color: chess.Color) -> str
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Challenge a Lichess user with SacrificeBot")
+    parser.add_argument("token_positional", nargs="?", help="Bot API token (optional positional)")
     parser.add_argument("--token", help="Bot API token (falls back to LICHESS_TOKEN env var)")
     parser.add_argument("--opponent", required=True, help="Lichess username to challenge")
     parser.add_argument("--clock", type=int, default=5, help="Base time in minutes")
@@ -267,7 +268,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[Iterable[str]] = None) -> None:
     args = parse_args(argv)
-    token = (args.token or os.getenv("LICHESS_TOKEN", "")).strip()
+    token = (args.token or args.token_positional or os.getenv("LICHESS_TOKEN", "")).strip()
     if not token:
         raise SystemExit("Please supply --token or set the LICHESS_TOKEN environment variable")
 
