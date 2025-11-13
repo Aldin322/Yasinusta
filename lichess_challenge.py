@@ -527,10 +527,13 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
     try:
         bot_account_id = _fetch_account_id(token)
-    except requests.RequestException as exc:  # pragma: no cover - network errors
-        raise SystemExit(f"Failed to query the bot account profile: {exc}") from exc
-    except RuntimeError as exc:
-        raise SystemExit(str(exc)) from exc
+    except (requests.RequestException, RuntimeError) as exc:
+        print(
+            "Warning: unable to query /api/account to learn the bot user ID. "
+            "Color detection will rely on board events only."
+        )
+        print(f"Details: {exc}")
+        bot_account_id = None
 
     bot = SacrificeBot(depth=args.depth, sacrifice_margin=args.sacrifice_margin)
     total_games = max(1, args.games)

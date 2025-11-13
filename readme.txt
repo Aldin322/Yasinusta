@@ -50,7 +50,11 @@ budget so SacrificeBot still responds immediately instead of thinking forever.
 Before the helper sends the challenge it also pings ``/api/account`` to learn
 your bot's exact user ID, guaranteeing that the board stream can always tell
 whether you're playing as White or Black and preventing the "my color is
-unknown so I never move" failure mode.
+unknown so I never move" failure mode.  If that profile lookup fails (for
+example because your token lacks the ``account:read`` scope), the helper simply
+logs a warning and falls back to inferring the color from the first board
+update, so the challenge still gets sent instead of aborting before the match
+even begins.
 If Lichess rejects the challenge, the CLI now prints the exact error reported by
 the API instead of crashing with a ``KeyError``, and it understands both of the
 slightly different JSON shapes that the challenge endpoint can return.  After a
