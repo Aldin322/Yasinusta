@@ -88,7 +88,15 @@ def _challenge_player(
             f"Unexpected response from Lichess while challenging {opponent}: {response.text}"
         ) from exc
 
+    # ``/api/challenge/{opponent}`` sometimes returns the challenge under
+    # ``{"challenge": {...}}`` (documented API response) and other times it
+    # returns the challenge object at the top level (what we observed when the
+    # user accepted the challenge but the CLI thought it failed).  Accept both
+    # forms so we do not flag a false rejection.
     challenge = payload.get("challenge")
+    if not challenge and payload.get("id") and payload.get("status"):
+        challenge = payload
+
     if not challenge:
         error_message = payload.get("error") or payload.get("message")
         raise RuntimeError(
