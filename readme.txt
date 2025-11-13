@@ -44,9 +44,10 @@ want to tweak the engine parameters, and pass ``--rated`` to play rated games.
 If Lichess rejects the challenge, the CLI now prints the exact error reported by
 the API instead of crashing with a ``KeyError``, and it understands both of the
 slightly different JSON shapes that the challenge endpoint can return.  It also
-subscribes to both ``gameStart`` and ``challenge`` events so it proceeds into the
-game as soon as the opponent accepts even if Lichess omits the documented
-wrapper, preventing the "Waiting for the game to start" hang you previously saw.
+subscribes to both ``gameStart`` and ``challenge`` events **via the Bot-only
+``/api/bot/stream/event`` endpoint**, so it proceeds into the game as soon as the
+opponent accepts even if Lichess omits the documented wrapper, preventing the
+"Waiting for the game to start" hang you previously saw.
 For repeated sparring, supply
 ``--games`` to automatically re-challenge the same opponent, ``--challenge-retries``
 to keep retrying when the player is busy, ``--retry-wait`` to control how long to

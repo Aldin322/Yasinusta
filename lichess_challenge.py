@@ -154,8 +154,10 @@ def _wait_for_game(
     def _timeout_expired() -> bool:
         return timeout_seconds > 0 and time.time() - start_time > timeout_seconds
 
+    event_stream_url = f"{LICHESS_API}/api/bot/stream/event"
+
     with requests.get(
-        f"{LICHESS_API}/api/stream/event",
+        event_stream_url,
         headers=_auth_headers(token),
         stream=True,
         timeout=60,
