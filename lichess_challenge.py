@@ -127,12 +127,18 @@ def _extract_challenge(payload: Dict) -> Optional[Dict]:
     return None
 
 
+class ChallengeNotFoundError(RuntimeError):
+    """Raised when Lichess reports a challenge no longer exists (HTTP 404)."""
+
+
 def _fetch_challenge(token: str, challenge_id: str) -> Dict:
     response = requests.get(
         f"{LICHESS_API}/api/challenge/{challenge_id}",
         headers=_auth_headers(token),
         timeout=15,
     )
+    if response.status_code == 404:
+        raise ChallengeNotFoundError(f"Challenge {challenge_id} is no longer available")
     response.raise_for_status()
     try:
         payload = response.json()
@@ -145,6 +151,48 @@ def _fetch_challenge(token: str, challenge_id: str) -> Dict:
     if not challenge:
         raise RuntimeError(f"Unable to parse challenge payload for {challenge_id}: {payload}")
     return challenge
+
+
+def _locate_active_game(token: str, opponent: str) -> Optional[Dict]:
+    """Inspect the account's active games to recover the game created from a challenge."""
+
+    response = requests.get(
+        f"{LICHESS_API}/api/account/playing",
+        headers=_auth_headers(token),
+        params={"nb": 10},
+        timeout=15,
+    )
+    response.raise_for_status()
+    try:
+        payload = response.json()
+    except ValueError as exc:  # pragma: no cover - defensive
+        raise RuntimeError(
+            f"Unexpected response from Lichess while listing active games: {response.text}"
+        ) from exc
+
+    opponent_lower = (opponent or "").lower()
+    for entry in payload.get("nowPlaying", []):
+        opp_payload = entry.get("opponent") or {}
+        opponent_id = (opp_payload.get("id") or "").lower()
+        if opponent_lower and opponent_id != opponent_lower:
+            continue
+
+        color_text = (entry.get("color") or "").lower()
+        if color_text == "white":
+            color: Optional[str] = "white"
+        elif color_text == "black":
+            color = "black"
+        else:
+            color = None
+
+        return {
+            "id": entry.get("gameId"),
+            "color": color,
+            "opponent": {"id": opp_payload.get("id")} if opp_payload.get("id") else {},
+            "me": {"id": entry.get("playerId")} if entry.get("playerId") else {},
+        }
+
+    return None
 
 
 def _challenge_with_retries(
@@ -183,24 +231,32 @@ def _wait_for_game(
     opponent_fallback = opponent
 
     while True:
-        challenge = _fetch_challenge(token, challenge_id)
-        status = (challenge.get("status") or "").lower()
+        try:
+            challenge = _fetch_challenge(token, challenge_id)
+        except ChallengeNotFoundError:
+            active_game = _locate_active_game(token, opponent_fallback)
+            if active_game and active_game.get("id"):
+                return active_game
+            challenge = None
 
-        if status in {"accepted", "started"}:
-            color = (challenge.get("finalColor") or challenge.get("color") or "").lower()
-            opponent_payload = challenge.get("destUser") or {}
-            opponent_id = opponent_payload.get("id") or opponent_fallback
-            challenger_payload = challenge.get("challenger") or {}
-            my_id = challenger_payload.get("id")
-            return {
-                "id": challenge_id,
-                "color": color if color in {"white", "black"} else None,
-                "opponent": {"id": opponent_id},
-                "me": {"id": my_id} if my_id else {},
-            }
+        if challenge:
+            status = (challenge.get("status") or "").lower()
 
-        if status in {"declined", "canceled"}:
-            raise RuntimeError(f"Challenge {status} by {opponent} before the game started")
+            if status in {"accepted", "started"}:
+                color = (challenge.get("finalColor") or challenge.get("color") or "").lower()
+                opponent_payload = challenge.get("destUser") or {}
+                opponent_id = opponent_payload.get("id") or opponent_fallback
+                challenger_payload = challenge.get("challenger") or {}
+                my_id = challenger_payload.get("id")
+                return {
+                    "id": challenge_id,
+                    "color": color if color in {"white", "black"} else None,
+                    "opponent": {"id": opponent_id},
+                    "me": {"id": my_id} if my_id else {},
+                }
+
+            if status in {"declined", "canceled"}:
+                raise RuntimeError(f"Challenge {status} by {opponent} before the game started")
 
         if timeout_seconds > 0 and time.time() - start_time > timeout_seconds:
             raise RuntimeError("Timed out waiting for Lichess to start the game")

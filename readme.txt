@@ -45,11 +45,11 @@ If Lichess rejects the challenge, the CLI now prints the exact error reported by
 the API instead of crashing with a ``KeyError``, and it understands both of the
 slightly different JSON shapes that the challenge endpoint can return.  After a
 challenge is accepted, the helper polls the challenge status until the game is
-officially started and then immediately attaches to the board stream, so it no
-longer misses the acceptance notification when the opponent clicks "Accept"
-before the SSE connection is ready.  Your bot therefore stops hanging on
-"Waiting for the game to start" and begins calculating its first move as soon as
-Lichess starts feeding the board state.
+officially started and then immediately attaches to the board stream.  If
+Lichess expires the challenge record the moment it turns into a game (returning
+HTTP 404), the helper now scans the ``/api/account/playing`` feed to recover the
+newly created game ID automatically, so you no longer get stuck in "Waiting for
+the game to start" limbo when the opponent accepts instantly.
 For repeated sparring, supply
 ``--games`` to automatically re-challenge the same opponent, ``--challenge-retries``
 to keep retrying when the player is busy, ``--retry-wait`` to control how long to
