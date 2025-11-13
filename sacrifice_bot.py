@@ -193,9 +193,20 @@ class SacrificeBot:
             attr = getattr(board, attr_name, None)
             if attr is None:
                 continue
-            if callable(attr):
-                return int(attr())
-            return int(attr)
+
+            value = attr() if callable(attr) else attr
+            # Some python-chess builds return a ``(int, bool)`` tuple where the
+            # hash lives in the first slot.  Accept that form instead of
+            # crashing on ``int(tuple)``.
+            if isinstance(value, tuple):
+                if not value:
+                    continue
+                value = value[0]
+
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
 
         raise AttributeError("python-chess Board is missing a transposition key helper")
 
