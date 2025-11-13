@@ -473,30 +473,9 @@ class SacrificeBot:
     def evaluate_white(self, board: chess.Board) -> float:
         """Return a centipawn evaluation from White's perspective."""
 
-        endgame_phase = self._game_phase(board)
-        attack_masks = self._attack_masks(board)
-        occupied_mask = board.occupied_co[chess.WHITE] | board.occupied_co[chess.BLACK]
-        score = 0.0
-        for color in (chess.WHITE, chess.BLACK):
-            sign = 1 if color == chess.WHITE else -1
-            material = self._material_score(board, color)
-            positional = self._piece_square_score(board, color, endgame_phase)
-            extras = (
-                self._bishop_pair_bonus(board, color)
-                + self._rook_file_bonus(board, color)
-                + self._rook_on_seventh_bonus(board, color)
-                + self._passed_pawn_bonus(board, color, endgame_phase)
-                + self._mobility_term(board, attack_masks, color)
-                + self._king_safety_score(board, color, endgame_phase)
-                + self._outpost_bonus(board, color)
-                + self._center_control_bonus(attack_masks[color], endgame_phase)
-                + self._space_bonus(attack_masks, color, occupied_mask, endgame_phase)
-                + self._king_ring_attack_bonus(board, attack_masks, color)
-                - self._pawn_structure_penalty(board, color)
-                - self._development_penalty(board, color, endgame_phase)
-            )
-            score += sign * (material + positional + extras)
-        return score
+        white_material = self._material_score(board, chess.WHITE)
+        black_material = self._material_score(board, chess.BLACK)
+        return float(white_material - black_material)
 
     def evaluate(self, board: chess.Board) -> float:
         score = self.evaluate_white(board)

@@ -3,9 +3,8 @@ Sacrifice Bot
 
 This repository contains a lightweight chess engine that can be used as the
 brain for a Lichess bot account.  The main entry point is ``sacrifice_bot.py``
-which runs a conventional alpha-beta search and evaluates positions using
-material, piece-square tables, mobility, rook-file awareness, king safety, pawn
-structure, and passed-pawn heuristics.  When multiple lines score roughly the same, the bot
+which runs a conventional alpha-beta search and evaluates positions using a
+straightforward material count for each side.  When multiple lines score roughly the same, the bot
 picks the one where it gives up more of its own material – effectively choosing
 the most sacrificial winning continuation.
 
@@ -85,15 +84,9 @@ Engine behavior
   the bot plays principled developing moves instantly before the heavy search
   kicks in.
 * Scores are reported in centipawns from the side to move's perspective.
-* Evaluation mixes classical piece-square values with bishop-pair rewards,
-  bitboard mobility counts, rook open-file bonuses, king-safety/pawn-shield heuristics, passed
-  pawns that scale into the endgame, outpost detection for minor pieces,
-  bitboard-accelerated center control tracking, space advantages in the enemy
-  half, activity bonuses for rooks planted on the seventh rank, development
-  penalties for idle knights and bishops, doubled/isolated/backward pawn
-  penalties, and newly added king-ring attack bonuses so the bot now actively
-  rewards piling pieces onto the opponent's monarch instead of only counting
-  material and structure cues.
+* Evaluation is intentionally simple and only compares the total material each
+  side currently has on the board.  This keeps the search behavior predictable
+  while focusing the "sacrifice" bias purely on trades of pieces and pawns.
 * The ``sacrifice_margin`` argument controls how close two moves must score for
   the engine to prefer the line that gives up more of its own material.
 * Iterative deepening now rides on top of aspiration windows, null-move
