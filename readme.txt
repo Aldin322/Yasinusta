@@ -23,7 +23,9 @@ Getting started
 
 4. Wire the ``SacrificeBot`` class into your Lichess bot runner (for example by
    plugging it into ``lichess-bot``'s ``engine.py`` callback) and provide your
-   API token via environment variables or a configuration file.
+   API token via environment variables or a configuration file.  The searcher
+   now performs basic time management automatically – just pass the remaining
+   clock (and increment) when calling ``choose`` if you have it.
 
 Playing test matches on Lichess
 -------------------------------
@@ -38,13 +40,19 @@ The script expects your bot token via the ``--token`` flag or the
 ``LICHESS_TOKEN`` environment variable and drives the full game via the Bot API
 once the opponent accepts.  Use ``--depth`` and ``--sacrifice-margin`` if you
 want to tweak the engine parameters, and pass ``--rated`` to play rated games.
+If Lichess rejects the challenge, the CLI now prints the exact error reported by
+the API instead of crashing with a ``KeyError``.
 
 Engine behavior
 ---------------
 
 * Search depth is set through the ``--depth`` CLI option or the ``depth``
-  parameter when instantiating ``SacrificeBot``.
+  parameter when instantiating ``SacrificeBot``.  When a clock is provided it
+  will iteratively deepen until it either reaches that depth or the allocated
+  time budget expires.
 * Move ordering prioritizes captures and checks to improve pruning.
+* Quiescence search keeps following forcing moves (captures/checks) at the leaf
+  nodes so the evaluation only happens after the position settles.
 * Scores are reported in centipawns from the side to move's perspective.
 * The ``sacrifice_margin`` argument controls how close two moves must score for
   the engine to prefer the line that gives up more of its own material.

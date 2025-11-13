@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -90,6 +91,10 @@ PIECE_SQUARE_TABLES: Dict[chess.PieceType, List[int]] = {
 }
 
 
+class SearchTimeout(Exception):
+    """Raised when the search must stop because the time budget expired."""
+
+
 @dataclass
 class SearchResult:
     move: Optional[chess.Move]
@@ -100,7 +105,7 @@ class SearchResult:
 class SacrificeBot:
     """A chess searcher that prefers sacrificing material when advantageous."""
 
-    def __init__(self, depth: int = 3, sacrifice_margin: int = 40) -> None:
+    def __init__(self, depth: int = 3, sacrifice_margin: int = 40, quiescence_depth: int = 6) -> None:
         """Create a new bot.
 
         Args:
@@ -108,15 +113,22 @@ class SacrificeBot:
             sacrifice_margin: Two scores within ``sacrifice_margin`` centipawns
                 of each other are treated as roughly equal.  In that case the bot
                 will prefer the variation that gives up more of its own material.
+            quiescence_depth: Maximum plies to extend capture-only search once
+                the fixed depth is exhausted.  This keeps tactical lines stable
+                without letting the search explode indefinitely.
         """
 
         if depth < 1:
             raise ValueError("depth must be >= 1")
+        if quiescence_depth < 0:
+            raise ValueError("quiescence_depth must be >= 0")
 
         self.depth = depth
         self.sacrifice_margin = sacrifice_margin
+        self.quiescence_depth = quiescence_depth
         self.root_color = chess.WHITE
         self.initial_material = 0
+        self._deadline: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Evaluation helpers
@@ -145,13 +157,92 @@ class SacrificeBot:
         score = self.evaluate_white(board)
         return score if self.root_color == chess.WHITE else -score
 
+    def _sacrifice_score(self, board: chess.Board) -> float:
+        return max(0, self.initial_material - self._material_score(board, self.root_color))
+
     # ------------------------------------------------------------------
-    def choose(self, board: chess.Board) -> SearchResult:
-        """Search for the best move from the current position."""
+    def _check_time(self) -> None:
+        if self._deadline is None:
+            return
+        if time.perf_counter() >= self._deadline:
+            raise SearchTimeout
+
+    def _time_budget(self, time_remaining_ms: int, increment_ms: int) -> int:
+        """Return how many milliseconds to spend on the current move."""
+
+        if time_remaining_ms <= 0:
+            return 0
+
+        # Keep a comfortable safety margin (at least 200 ms or 10% of the clock).
+        safety_margin = max(200, int(time_remaining_ms * 0.1))
+        usable = max(0, time_remaining_ms - safety_margin)
+        # Spend up to 5% of the remaining time plus half of the increment.
+        allocation = int(time_remaining_ms * 0.05) + increment_ms // 2
+        allocation = max(50, allocation)
+        return min(usable, allocation)
+
+    # ------------------------------------------------------------------
+    def choose(
+        self,
+        board: chess.Board,
+        time_remaining_ms: Optional[int] = None,
+        increment_ms: int = 0,
+    ) -> SearchResult:
+        """Search for the best move from the current position.
+
+        Args:
+            board: Current position.
+            time_remaining_ms: Remaining clock time in milliseconds for the
+                side to move.  When provided the bot performs iterative
+                deepening and aborts the search if the allotted budget runs out.
+            increment_ms: Clock increment in milliseconds, used to slightly
+                extend the search budget when plenty of increment is available.
+        """
 
         self.root_color = board.turn
         self.initial_material = self._material_score(board, self.root_color)
 
+        self._deadline = None
+        use_time_management = False
+        if time_remaining_ms is not None:
+            budget = self._time_budget(time_remaining_ms, increment_ms)
+            if budget > 0:
+                self._deadline = time.perf_counter() + budget / 1000
+                use_time_management = True
+            else:
+                move = next(iter(board.legal_moves), None)
+                sacrifices = self._sacrifice_score(board)
+                return SearchResult(move, self.evaluate(board), sacrifices)
+
+        best_result = SearchResult(None, -math.inf, -math.inf)
+        start_depth = 1 if use_time_management else self.depth
+        max_depth = self.depth
+
+        depth = start_depth
+        while depth <= max_depth:
+            try:
+                result = self._search_root(board, depth)
+            except SearchTimeout:
+                break
+            best_result = result
+            depth += 1 if use_time_management else max_depth  # exit loop when fixed depth
+
+        if best_result.move is None:
+            # Fall back to the first legal move if we never finished a search.
+            move = next(iter(board.legal_moves), None)
+            sacrifices = self._sacrifice_score(board)
+            return SearchResult(move, self.evaluate(board), sacrifices)
+
+        return best_result
+
+    def _order_moves(self, board: chess.Board) -> List[chess.Move]:
+        def move_score(move: chess.Move) -> Tuple[int, int]:
+            # Captures and checking moves are usually more critical – score them higher.
+            return (int(board.is_capture(move)), int(board.gives_check(move)))
+
+        return sorted(board.legal_moves, key=move_score, reverse=True)
+
+    def _search_root(self, board: chess.Board, depth: int) -> SearchResult:
         best_move = None
         best_score = -math.inf
         best_sacrifices = -math.inf
@@ -160,8 +251,9 @@ class SacrificeBot:
         beta = math.inf
 
         for move in self._order_moves(board):
+            self._check_time()
             board.push(move)
-            score, sacrifices = self._search(board, self.depth - 1, alpha, beta)
+            score, sacrifices = self._search(board, depth - 1, alpha, beta, 0)
             board.pop()
 
             if self._is_better(score, sacrifices, best_score, best_sacrifices, maximizing=True):
@@ -173,29 +265,97 @@ class SacrificeBot:
 
         return SearchResult(best_move, best_score, best_sacrifices)
 
-    def _order_moves(self, board: chess.Board) -> List[chess.Move]:
-        def move_score(move: chess.Move) -> Tuple[int, int]:
-            # Captures and checking moves are usually more critical – score them higher.
-            return (int(board.is_capture(move)), int(board.gives_check(move)))
+    def _search(
+        self,
+        board: chess.Board,
+        depth: int,
+        alpha: float,
+        beta: float,
+        quiescence_level: int,
+    ) -> Tuple[float, float]:
+        self._check_time()
 
-        return sorted(board.legal_moves, key=move_score, reverse=True)
-
-    def _search(self, board: chess.Board, depth: int, alpha: float, beta: float) -> Tuple[float, float]:
-        if depth == 0 or board.is_game_over():
+        if board.is_game_over():
             if board.is_checkmate():
                 score = -math.inf if board.turn == self.root_color else math.inf
             else:
                 score = self.evaluate(board)
-            sacrifices = max(0, self.initial_material - self._material_score(board, self.root_color))
+            sacrifices = self._sacrifice_score(board)
             return score, sacrifices
+
+        if depth == 0:
+            return self._quiescence(board, alpha, beta, quiescence_level)
 
         maximizing = board.turn == self.root_color
         best_score = -math.inf if maximizing else math.inf
         best_sacrifices = -math.inf if maximizing else math.inf
 
-        for move in board.legal_moves:
+        for move in self._order_moves(board):
             board.push(move)
-            child_score, child_sacrifices = self._search(board, depth - 1, alpha, beta)
+            child_score, child_sacrifices = self._search(board, depth - 1, alpha, beta, quiescence_level)
+            board.pop()
+
+            if self._is_better(child_score, child_sacrifices, best_score, best_sacrifices, maximizing):
+                best_score = child_score
+                best_sacrifices = child_sacrifices
+
+            if maximizing:
+                alpha = max(alpha, best_score)
+            else:
+                beta = min(beta, best_score)
+
+            if beta <= alpha:
+                break
+
+        return best_score, best_sacrifices
+
+    def _quiescence(
+        self,
+        board: chess.Board,
+        alpha: float,
+        beta: float,
+        quiescence_level: int,
+    ) -> Tuple[float, float]:
+        self._check_time()
+
+        if board.is_game_over():
+            if board.is_checkmate():
+                score = -math.inf if board.turn == self.root_color else math.inf
+            else:
+                score = self.evaluate(board)
+            return score, self._sacrifice_score(board)
+
+        stand_pat = self.evaluate(board)
+        stand_sacrifices = self._sacrifice_score(board)
+
+        maximizing = board.turn == self.root_color
+        if maximizing:
+            if stand_pat >= beta:
+                return stand_pat, stand_sacrifices
+            if stand_pat > alpha:
+                alpha = stand_pat
+        else:
+            if stand_pat <= alpha:
+                return stand_pat, stand_sacrifices
+            if stand_pat < beta:
+                beta = stand_pat
+
+        if quiescence_level >= self.quiescence_depth:
+            return stand_pat, stand_sacrifices
+
+        capture_like_moves = [
+            move
+            for move in board.legal_moves
+            if board.is_capture(move) or board.gives_check(move)
+        ]
+        if not capture_like_moves:
+            return stand_pat, stand_sacrifices
+
+        best_score = stand_pat
+        best_sacrifices = stand_sacrifices
+        for move in capture_like_moves:
+            board.push(move)
+            child_score, child_sacrifices = self._quiescence(board, alpha, beta, quiescence_level + 1)
             board.pop()
 
             if self._is_better(child_score, child_sacrifices, best_score, best_sacrifices, maximizing):

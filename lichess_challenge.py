@@ -80,7 +80,22 @@ def _challenge_player(
         timeout=30,
     )
     response.raise_for_status()
-    return response.json()["challenge"]
+
+    try:
+        payload = response.json()
+    except ValueError as exc:  # pragma: no cover - defensive
+        raise RuntimeError(
+            f"Unexpected response from Lichess while challenging {opponent}: {response.text}"
+        ) from exc
+
+    challenge = payload.get("challenge")
+    if not challenge:
+        error_message = payload.get("error") or payload.get("message")
+        raise RuntimeError(
+            "Lichess rejected the challenge"
+            + (f": {error_message}" if error_message else f". Full response: {payload}")
+        )
+    return challenge
 
 
 def _wait_for_game(token: str, challenge_id: str, opponent: str) -> Dict:
@@ -140,18 +155,26 @@ def _drive_game(token: str, game_id: str, my_color: chess.Color, bot: SacrificeB
         if event_type not in {"gameFull", "gameState"}:
             continue
 
-        moves = event["state"]["moves"] if event_type == "gameFull" else event.get("moves", "")
+        state = event["state"] if event_type == "gameFull" else event
+        moves = state.get("moves", "")
         board.reset()
         _apply_moves(board, moves)
 
         if _should_move(board, my_color):
-            search_result = bot.choose(board)
+            my_time_key = "wtime" if my_color == chess.WHITE else "btime"
+            my_inc_key = "winc" if my_color == chess.WHITE else "binc"
+            my_time_raw = state.get(my_time_key)
+            my_increment_raw = state.get(my_inc_key, 0)
+            my_time = int(my_time_raw) if my_time_raw is not None else None
+            my_increment = int(my_increment_raw) if my_increment_raw is not None else 0
+
+            search_result = bot.choose(board, my_time, my_increment)
             if not search_result.move:
                 raise RuntimeError("No legal move found for the current position")
             _submit_move(token, game_id, search_result.move)
             time.sleep(0.2)
 
-        status = event["state"].get("status") if event_type == "gameFull" else event.get("status")
+        status = state.get("status")
         if status and status != "started":
             break
 
@@ -181,7 +204,12 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
     bot = SacrificeBot(depth=args.depth, sacrifice_margin=args.sacrifice_margin)
     print(f"Challenging {args.opponent} for a {args.clock}+{args.increment} game...")
-    challenge = _challenge_player(token, args.opponent, args.clock, args.increment, args.rated)
+    try:
+        challenge = _challenge_player(token, args.opponent, args.clock, args.increment, args.rated)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    except requests.RequestException as exc:  # pragma: no cover - network errors
+        raise SystemExit(f"Failed to send challenge: {exc}") from exc
     challenge_id = challenge["id"]
     print(f"Challenge created (id: {challenge_id}). Waiting for the game to start...")
     game = _wait_for_game(token, challenge_id, args.opponent)
