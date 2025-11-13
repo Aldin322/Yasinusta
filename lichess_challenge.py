@@ -140,10 +140,20 @@ def _challenge_with_retries(
             time.sleep(wait_time)
 
 
-def _wait_for_game(token: str, challenge_id: str, opponent: str) -> Dict:
+def _wait_for_game(
+    token: str,
+    challenge_id: str,
+    opponent: str,
+    timeout_seconds: int = 120,
+) -> Dict:
     """Block until the specific challenge turns into a game and return it."""
 
-    opponent = opponent.lower()
+    opponent_normalized = opponent.lower()
+    start_time = time.time()
+
+    def _timeout_expired() -> bool:
+        return timeout_seconds > 0 and time.time() - start_time > timeout_seconds
+
     with requests.get(
         f"{LICHESS_API}/api/stream/event",
         headers=_auth_headers(token),
@@ -152,11 +162,42 @@ def _wait_for_game(token: str, challenge_id: str, opponent: str) -> Dict:
     ) as response:
         response.raise_for_status()
         for event in _stream_sse(response):
-            if event.get("type") == "gameStart":
+            event_type = event.get("type")
+            if event_type == "gameStart":
                 game = event.get("game", {})
-                if game.get("id") == challenge_id or game.get("opponent", {}).get("id", "").lower() == opponent:
+                opponent_id = game.get("opponent", {}).get("id", "").lower()
+                if game.get("id") == challenge_id or opponent_id == opponent_normalized:
                     return game
-    raise RuntimeError("Failed to detect the started game from the event stream")
+
+            if event_type == "challenge":
+                challenge = event.get("challenge", {})
+                if challenge.get("id") != challenge_id:
+                    continue
+
+                status = challenge.get("status")
+                if status in {"accepted", "started"}:
+                    color = challenge.get("finalColor") or challenge.get("color") or "random"
+                    color = color.lower()
+                    if color not in {"white", "black"}:
+                        # Color still random – default to white until the board stream tells us otherwise.
+                        color = "white"
+                    opponent_payload = challenge.get("destUser") or {}
+                    if opponent_payload.get("id"):
+                        opponent_id = opponent_payload["id"]
+                    else:
+                        opponent_id = opponent
+                    return {
+                        "id": challenge_id,
+                        "color": color,
+                        "opponent": {"id": opponent_id},
+                    }
+
+                if status in {"declined", "canceled"}:
+                    raise RuntimeError(f"Challenge {status} by {opponent} before the game started")
+
+            if _timeout_expired():
+                break
+    raise RuntimeError("Failed to detect the started game from the event stream before timing out")
 
 
 def _apply_moves(board: chess.Board, moves: str) -> None:
