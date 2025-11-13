@@ -98,6 +98,28 @@ def _stream_json_events(response: requests.Response) -> Iterator[Dict]:
             raise RuntimeError(f"Malformed trailing SSE payload from Lichess: {buffer}") from exc
 
 
+def _fetch_account_id(token: str) -> str:
+    """Return the bot account's user ID for reliably inferring our color."""
+
+    response = requests.get(
+        f"{LICHESS_API}/api/account",
+        headers=_auth_headers(token),
+        timeout=15,
+    )
+    response.raise_for_status()
+    try:
+        payload = response.json()
+    except ValueError as exc:  # pragma: no cover - defensive
+        raise RuntimeError(
+            "Unexpected response from Lichess while fetching the bot profile"
+        ) from exc
+
+    account_id = (payload.get("id") or "").strip()
+    if not account_id:
+        raise RuntimeError("Unable to determine the bot account ID from /api/account")
+    return account_id
+
+
 def _challenge_player(
     token: str,
     opponent: str,
@@ -503,6 +525,13 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     if not token:
         raise SystemExit("Please supply --token or set the LICHESS_TOKEN environment variable")
 
+    try:
+        bot_account_id = _fetch_account_id(token)
+    except requests.RequestException as exc:  # pragma: no cover - network errors
+        raise SystemExit(f"Failed to query the bot account profile: {exc}") from exc
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+
     bot = SacrificeBot(depth=args.depth, sacrifice_margin=args.sacrifice_margin)
     total_games = max(1, args.games)
 
@@ -543,13 +572,12 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
                 f"Challenge {challenge_id} accepted. Expecting to play as {'White' if my_color_hint == chess.WHITE else 'Black'} once the board stream opens..."
             )
 
-        my_user_id = (game.get("me") or {}).get("id")
         final_state, resolved_color = _drive_game(
             token,
             game["id"],
             my_color_hint,
             bot,
-            my_user_id=my_user_id,
+            my_user_id=bot_account_id,
         )
         print(_summarize_game_outcome(final_state, resolved_color))
         print("Game finished.")

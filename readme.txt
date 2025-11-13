@@ -47,6 +47,10 @@ want to tweak the engine parameters, and pass ``--rated`` to play rated games.
 If Lichess omits the ``wtime``/``btime`` fields for an update (something that
 can happen for the very first move), the helper now falls back to a 1.5 second
 budget so SacrificeBot still responds immediately instead of thinking forever.
+Before the helper sends the challenge it also pings ``/api/account`` to learn
+your bot's exact user ID, guaranteeing that the board stream can always tell
+whether you're playing as White or Black and preventing the "my color is
+unknown so I never move" failure mode.
 If Lichess rejects the challenge, the CLI now prints the exact error reported by
 the API instead of crashing with a ``KeyError``, and it understands both of the
 slightly different JSON shapes that the challenge endpoint can return.  After a
