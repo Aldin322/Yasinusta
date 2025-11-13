@@ -55,7 +55,7 @@ for a moment.  If Lichess expires the challenge record the moment it turns into
 a game (returning HTTP 404), the helper scans the playing feed to recover the
 newly created game ID automatically, so you no longer get stuck in "Waiting for
 the game to start" limbo when the opponent accepts instantly.
-Once the real game ID is known the helper now speaks the NDJSON format that the ``/api/bot/game/stream/{gameId}`` endpoint actually returns, so the board stream opens immediately and the engine produces its reply right away instead of waiting for Server-Sent Events frames that never arrive.
+Once the real game ID is known the helper now speaks the NDJSON format that the ``/api/bot/game/stream/{gameId}`` endpoint actually returns, so the board stream opens immediately and the engine produces its reply right away instead of waiting for Server-Sent Events frames that never arrive.  The board stream connection now uses a short read timeout plus automatic reconnects, so if Lichess delays the first update or drops the socket mid-game the helper simply re-attaches and keeps pushing moves instead of hanging forever at "Waiting for the game to start".
 For repeated sparring, supply
 ``--games`` to automatically re-challenge the same opponent, ``--challenge-retries``
 to keep retrying when the player is busy, ``--retry-wait`` to control how long to
@@ -75,7 +75,15 @@ Engine behavior
 * Move ordering prioritizes principal-variation moves, transposition-table hits,
   killers, history moves, captures, and checks to improve pruning.
 * Quiescence search keeps following forcing moves (captures/checks) at the leaf
-  nodes so the evaluation only happens after the position settles.
+  nodes so the evaluation only happens after the position settles, and shallow
+  nodes run futility and razoring checks to skip hopeless continuations before
+  they waste time.
+* Tactical extensions fire for checking moves or pawns racing toward promotion,
+  so sharp tactical fights get an extra ply of calculation without slowing down
+  quiet positions.
+* A tiny deterministic opening book covers the most common early structures so
+  the bot plays principled developing moves instantly before the heavy search
+  kicks in.
 * Scores are reported in centipawns from the side to move's perspective.
 * Evaluation mixes classical piece-square values with bishop-pair rewards,
   mobility, rook open-file bonuses, king-safety/pawn-shield heuristics, passed

@@ -81,6 +81,28 @@ PIECE_SQUARE_TABLES: Dict[chess.PieceType, List[int]] = {
     ],
 }
 
+# Tiny deterministic opening book so the bot starts games instantly with
+# principled moves instead of burning time calculating the first few plies.
+OPENING_BOOK: Dict[str, str] = {
+    # Starting position: play 1.e4 with White, 1...c5 with Black.
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -": "e2e4",
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq -": "c7c5",
+    # Replies against mainline choices.
+    "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3": "c7c5",
+    "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3": "d7d5",
+    "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq c3": "e7e5",
+    "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq -": "d7d5",
+    # Developing moves for White in common structures.
+    "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6": "g1f3",
+    "rnbqkbnr/pppp1ppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq d6": "c1f4",
+    "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq e6": "g1f3",
+    "rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq -": "d7d6",
+    "rnbqkbnr/pp2pppp/3p4/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -": "d2d4",
+    "rnbqkbnr/pppppppp/5n2/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq -": "c2c4",
+    "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -": "f1c4",
+    "rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq -": "e7e6",
+}
+
 KING_MIDGAME_TABLE: List[int] = [
     -30,-40,-40,-50,-50,-40,-40,-30,
     -30,-40,-40,-50,-50,-40,-40,-30,
@@ -395,6 +417,23 @@ class SacrificeBot:
     def _sacrifice_score(self, board: chess.Board) -> float:
         return max(0, self.initial_material - self._material_score(board, self.root_color))
 
+    def _book_key(self, board: chess.Board) -> str:
+        fields = board.fen().split()
+        return " ".join(fields[:4])
+
+    def _opening_book_move(self, board: chess.Board) -> Optional[chess.Move]:
+        key = self._book_key(board)
+        move_uci = OPENING_BOOK.get(key)
+        if not move_uci:
+            return None
+        try:
+            move = board.parse_uci(move_uci)
+        except ValueError:
+            return None
+        if move not in board.legal_moves:
+            return None
+        return move
+
     # ------------------------------------------------------------------
     def _check_time(self) -> None:
         if self._deadline is None:
@@ -475,7 +514,11 @@ class SacrificeBot:
         usable = max(0, time_remaining_ms - safety_margin)
 
         allocation = int(per_move + increment_ms * 0.6)
-        allocation = max(60, allocation)
+        if phase < 0.35:
+            allocation = min(allocation, 2000 + increment_ms)
+        elif phase < 0.7:
+            allocation = min(allocation, 3500 + increment_ms)
+        allocation = max(80, allocation)
         hard_cap = int(time_remaining_ms * 0.7)
         if hard_cap > 0:
             allocation = min(allocation, hard_cap)
@@ -501,6 +544,12 @@ class SacrificeBot:
 
         self.root_color = board.turn
         self.initial_material = self._material_score(board, self.root_color)
+
+        book_move = self._opening_book_move(board)
+        if book_move is not None:
+            sacrifices = self._sacrifice_score(board)
+            score = self.evaluate(board)
+            return SearchResult(book_move, score, sacrifices)
 
         self._deadline = None
         self._tt.clear()
@@ -718,6 +767,21 @@ class SacrificeBot:
         best_score = -math.inf if maximizing else math.inf
         best_sacrifices = -math.inf if maximizing else math.inf
 
+        static_eval = self.evaluate(board)
+        static_sacrifices = self._sacrifice_score(board)
+        if depth <= 2 and not board.is_check():
+            futility_margin = 120 + 60 * depth
+            if maximizing and static_eval + futility_margin <= alpha:
+                return static_eval, static_sacrifices
+            if not maximizing and static_eval - futility_margin >= beta:
+                return static_eval, static_sacrifices
+        if depth == 1 and not board.is_check():
+            razor_margin = 160
+            if maximizing and static_eval + razor_margin <= alpha:
+                return self._quiescence(board, alpha, beta, 0)
+            if not maximizing and static_eval - razor_margin >= beta:
+                return self._quiescence(board, alpha, beta, 0)
+
         pv_move = self._principal_variation[ply] if ply < len(self._principal_variation) else None
         best_move = tt_move if tt_move in board.legal_moves else None
         move_index = 0
@@ -725,6 +789,12 @@ class SacrificeBot:
             move_index += 1
             is_capture = board.is_capture(move)
             gives_check = board.gives_check(move)
+            moved_piece_type = board.piece_type_at(move.from_square)
+            promotion_extension = False
+            if moved_piece_type == chess.PAWN:
+                rank = chess.square_rank(move.to_square)
+                if rank in (0, 7) or move.promotion:
+                    promotion_extension = True
             reduction = 0
             if (
                 depth >= 3
@@ -735,10 +805,12 @@ class SacrificeBot:
             ):
                 reduction = 1
 
+            extension = 1 if (gives_check or promotion_extension) else 0
+
             board.push(move)
             child_score, child_sacrifices = self._search(
                 board,
-                max(0, depth - 1 - reduction),
+                max(0, depth - 1 - reduction + extension),
                 alpha,
                 beta,
                 ply + 1,
@@ -750,7 +822,7 @@ class SacrificeBot:
                 board.push(move)
                 child_score, child_sacrifices = self._search(
                     board,
-                    depth - 1,
+                    max(0, depth - 1 + extension),
                     alpha,
                     beta,
                     ply + 1,

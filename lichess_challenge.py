@@ -316,15 +316,40 @@ def _apply_moves(board: chess.Board, moves: str) -> None:
             raise RuntimeError(f"Received illegal move sequence from Lichess (bad move: {move})") from exc
 
 
-def _stream_board(token: str, game_id: str) -> Iterable[Dict]:
-    with requests.get(
-        f"{LICHESS_API}/api/bot/game/stream/{game_id}",
-        headers=_auth_headers(token),
-        stream=True,
-        timeout=30,
-    ) as response:
-        response.raise_for_status()
-        yield from _stream_json_events(response)
+def _stream_board(
+    token: str,
+    game_id: str,
+    reconnect_delay: int = 2,
+) -> Iterable[Dict]:
+    print(f"Connecting to the board stream for game {game_id}...")
+    reconnect_delay = max(1, reconnect_delay)
+
+    while True:
+        try:
+            with requests.get(
+                f"{LICHESS_API}/api/bot/game/stream/{game_id}",
+                headers=_auth_headers(token),
+                stream=True,
+                timeout=(10, 15),
+            ) as response:
+                response.raise_for_status()
+                for event in _stream_json_events(response):
+                    yield event
+                # Lichess closed the stream (usually because the game ended).
+                return
+        except GeneratorExit:
+            # The caller stopped consuming events because the game finished.
+            return
+        except requests.Timeout:
+            print(
+                f"Board stream for game {game_id} timed out waiting for data. Reconnecting in {reconnect_delay}s..."
+            )
+        except requests.RequestException as exc:
+            print(
+                f"Board stream error for game {game_id}: {exc}. Reconnecting in {reconnect_delay}s..."
+            )
+
+        time.sleep(reconnect_delay)
 
 
 def _submit_move(token: str, game_id: str, move: chess.Move) -> None:
