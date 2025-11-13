@@ -40,11 +40,14 @@ def _stream_sse(response: requests.Response) -> Iterator[Dict]:
     """Yield JSON payloads from a Server-Sent Events response."""
 
     buffer = ""
-    for raw_line in response.iter_lines(decode_unicode=True):
+    for raw_line in response.iter_lines():
         if raw_line is None:
             continue
 
-        line = raw_line.strip()
+        if isinstance(raw_line, bytes):
+            line = raw_line.decode("utf-8", errors="replace").strip()
+        else:
+            line = raw_line.strip()
         if not line:
             if buffer:
                 try:
