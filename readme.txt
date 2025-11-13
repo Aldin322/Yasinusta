@@ -55,7 +55,7 @@ for a moment.  If Lichess expires the challenge record the moment it turns into
 a game (returning HTTP 404), the helper scans the playing feed to recover the
 newly created game ID automatically, so you no longer get stuck in "Waiting for
 the game to start" limbo when the opponent accepts instantly.
-Once the real game ID is known the helper now speaks the NDJSON format that the ``/api/bot/game/stream/{gameId}`` endpoint actually returns, so the board stream opens immediately and the engine produces its reply right away instead of waiting for Server-Sent Events frames that never arrive.  The board stream connection now uses a short read timeout plus automatic reconnects, so if Lichess delays the first update or drops the socket mid-game the helper simply re-attaches and keeps pushing moves instead of hanging forever at "Waiting for the game to start".
+Once the real game ID is known the helper now speaks the NDJSON format that the ``/api/bot/game/stream/{gameId}`` endpoint actually returns, so the board stream opens immediately and the engine produces its reply right away instead of waiting for Server-Sent Events frames that never arrive.  The board stream connection now uses a short read timeout plus automatic reconnects, so if Lichess delays the first update or drops the socket mid-game the helper simply re-attaches and keeps pushing moves instead of hanging forever at "Waiting for the game to start".  When Lichess omits the ``wtime/btime`` fields for a few moves (which happens right after the game starts in some challenge flows), pass ``--fallback-move-time`` to cap the think time anyway so the engine keeps replying instantly instead of waiting for a full 16-ply fixed-depth search to finish.
 For repeated sparring, supply
 ``--games`` to automatically re-challenge the same opponent, ``--challenge-retries``
 to keep retrying when the player is busy, ``--retry-wait`` to control how long to
@@ -90,9 +90,10 @@ Engine behavior
   pawns that scale into the endgame, outpost detection for minor pieces,
   bitboard-accelerated center control tracking, space advantages in the enemy
   half, activity bonuses for rooks planted on the seventh rank, development
-  penalties for idle knights and bishops, and doubled/isolated/backward pawn
-  penalties so the search understands complex middlegame structures instead of
-  dropping material to simple positional cues.
+  penalties for idle knights and bishops, doubled/isolated/backward pawn
+  penalties, and newly added king-ring attack bonuses so the bot now actively
+  rewards piling pieces onto the opponent's monarch instead of only counting
+  material and structure cues.
 * The ``sacrifice_margin`` argument controls how close two moves must score for
   the engine to prefer the line that gives up more of its own material.
 * Iterative deepening now rides on top of aspiration windows, null-move

@@ -140,6 +140,7 @@ CENTER_CONTROL_BONUS = 4
 MINOR_DEVELOPMENT_PENALTY = 16
 ROOK_ON_SEVENTH_BONUS = 18
 SPACE_ADVANTAGE_BONUS = 2
+KING_RING_ATTACK_WEIGHT = 6
 DEVELOPMENT_SQUARES = {
     chess.WHITE: {
         chess.KNIGHT: (chess.B1, chess.G1),
@@ -421,6 +422,17 @@ class SacrificeBot:
                 bonus += ROOK_ON_SEVENTH_BONUS
         return bonus
 
+    def _king_ring_attack_bonus(
+        self, board: chess.Board, attack_masks: Dict[chess.Color, int], color: chess.Color
+    ) -> float:
+        target_color = not color
+        king_square = board.king(target_color)
+        if king_square is None:
+            return 0.0
+        ring_mask = chess.BB_KING_ATTACKS[king_square] | chess.BB_SQUARES[king_square]
+        attacks = attack_masks[color] & ring_mask
+        return float(chess.popcount(attacks) * KING_RING_ATTACK_WEIGHT)
+
     def _development_penalty(
         self, board: chess.Board, color: chess.Color, endgame_phase: float
     ) -> float:
@@ -479,6 +491,7 @@ class SacrificeBot:
                 + self._outpost_bonus(board, color)
                 + self._center_control_bonus(attack_masks[color], endgame_phase)
                 + self._space_bonus(attack_masks, color, occupied_mask, endgame_phase)
+                + self._king_ring_attack_bonus(board, attack_masks, color)
                 - self._pawn_structure_penalty(board, color)
                 - self._development_penalty(board, color, endgame_phase)
             )

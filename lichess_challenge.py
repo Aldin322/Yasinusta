@@ -384,10 +384,13 @@ def _drive_game(
     my_color: Optional[chess.Color],
     bot: SacrificeBot,
     my_user_id: Optional[str] = None,
+    fallback_move_time_ms: int = 0,
 ) -> Tuple[Dict, Optional[chess.Color]]:
     board = chess.Board()
     final_state: Dict = {}
     announced_start = False
+
+    warned_missing_clock = False
 
     for event in _stream_board(token, game_id):
         event_type = event.get("type")
@@ -421,7 +424,19 @@ def _drive_game(
             my_time = int(my_time_raw) if my_time_raw is not None else None
             my_increment = int(my_increment_raw) if my_increment_raw is not None else 0
 
-            search_result = bot.choose(board, my_time, my_increment)
+            time_for_move = my_time
+            increment = my_increment
+            if time_for_move is None and fallback_move_time_ms > 0:
+                time_for_move = fallback_move_time_ms
+                increment = 0
+                if not warned_missing_clock:
+                    seconds = fallback_move_time_ms / 1000
+                    print(
+                        f"Clock information missing from stream; limiting think time to {seconds:.1f}s per move."
+                    )
+                    warned_missing_clock = True
+
+            search_result = bot.choose(board, time_for_move, increment)
             if not search_result.move:
                 raise RuntimeError("No legal move found for the current position")
             _submit_move(token, game_id, search_result.move)
@@ -468,6 +483,12 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         default=40,
         help="Sacrifice margin (centipawns) forwarded to SacrificeBot",
     )
+    parser.add_argument(
+        "--fallback-move-time",
+        type=float,
+        default=3.0,
+        help="Seconds to spend per move when the board stream omits clock data (0 disables)",
+    )
     parser.add_argument("--games", type=int, default=1, help="Number of consecutive games to play")
     parser.add_argument(
         "--challenge-retries",
@@ -498,6 +519,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
     bot = SacrificeBot(depth=args.depth, sacrifice_margin=args.sacrifice_margin)
     total_games = max(1, args.games)
+    fallback_move_time_ms = int(max(0.0, args.fallback_move_time) * 1000)
 
     for game_index in range(total_games):
         print(f"=== Match {game_index + 1}/{total_games} ===")
@@ -543,6 +565,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
             my_color_hint,
             bot,
             my_user_id=my_user_id,
+            fallback_move_time_ms=fallback_move_time_ms,
         )
         print(_summarize_game_outcome(final_state, resolved_color))
         print("Game finished.")
