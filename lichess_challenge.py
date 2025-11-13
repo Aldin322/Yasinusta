@@ -27,6 +27,7 @@ from sacrifice_bot import SacrificeBot
 
 
 LICHESS_API = "https://lichess.org"
+FALLBACK_MOVE_TIME_MS = 1500
 
 
 def _auth_headers(token: str) -> Dict[str, str]:
@@ -421,7 +422,13 @@ def _drive_game(
             my_time = int(my_time_raw) if my_time_raw is not None else None
             my_increment = int(my_increment_raw) if my_increment_raw is not None else 0
 
-            search_result = bot.choose(board, my_time, my_increment)
+            time_budget = my_time
+            increment = my_increment
+            if time_budget is None:
+                time_budget = FALLBACK_MOVE_TIME_MS
+                increment = 0
+
+            search_result = bot.choose(board, time_budget, increment)
             if not search_result.move:
                 raise RuntimeError("No legal move found for the current position")
             _submit_move(token, game_id, search_result.move)

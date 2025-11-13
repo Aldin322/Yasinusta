@@ -44,6 +44,9 @@ The script expects your bot token via either the optional positional argument
 ``LICHESS_TOKEN`` environment variable and drives the full game via the Bot API
 once the opponent accepts.  Use ``--depth`` and ``--sacrifice-margin`` if you
 want to tweak the engine parameters, and pass ``--rated`` to play rated games.
+If Lichess omits the ``wtime``/``btime`` fields for an update (something that
+can happen for the very first move), the helper now falls back to a 1.5 second
+budget so SacrificeBot still responds immediately instead of thinking forever.
 If Lichess rejects the challenge, the CLI now prints the exact error reported by
 the API instead of crashing with a ``KeyError``, and it understands both of the
 slightly different JSON shapes that the challenge endpoint can return.  After a
