@@ -1,1 +1,2 @@
 python-chess==1.999
+requests>=2.31.0
