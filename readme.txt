@@ -1,1 +1,36 @@
-hii
+Sacrifice Bot
+=============
+
+This repository contains a lightweight chess engine that can be used as the
+brain for a Lichess bot account.  The main entry point is ``sacrifice_bot.py``
+which runs a conventional alpha-beta search and evaluates positions based on
+material and piece-square tables.  When multiple lines score roughly the same,
+the bot picks the one where it gives up more of its own material – effectively
+choosing the most sacrificial winning continuation.
+
+Getting started
+---------------
+
+1. Create and activate a Python 3.11+ virtual environment.
+2. Install dependencies: ``pip install -r requirements.txt``.
+3. Run a sample search from the initial position (depth 3 by default):
+
+   ``python sacrifice_bot.py``
+
+   To analyze a custom FEN and depth, pass the arguments explicitly, for example:
+
+   ``python sacrifice_bot.py "r1bqkbnr/pppp1ppp/2n5/4p3/3PP3/5N2/PPP2PPP/RNBQKB1R w KQkq - 2 4" --depth 4``
+
+4. Wire the ``SacrificeBot`` class into your Lichess bot runner (for example by
+   plugging it into ``lichess-bot``'s ``engine.py`` callback) and provide your
+   API token via environment variables or a configuration file.
+
+Engine behavior
+---------------
+
+* Search depth is set through the ``--depth`` CLI option or the ``depth``
+  parameter when instantiating ``SacrificeBot``.
+* Move ordering prioritizes captures and checks to improve pruning.
+* Scores are reported in centipawns from the side to move's perspective.
+* The ``sacrifice_margin`` argument controls how close two moves must score for
+  the engine to prefer the line that gives up more of its own material.
