@@ -259,9 +259,43 @@ def _challenge_with_retries(
             attempts += 1
             if attempts > max(0, retries):
                 raise
-            wait_time = max(1, retry_wait)
-            print(f"Challenge attempt {attempts} failed: {exc}. Retrying in {wait_time}s...")
+            wait_time = _retry_delay_for_exception(exc, retry_wait, attempts)
+            rate_limit_note = ""
+            if _is_rate_limit_error(exc):
+                rate_limit_note = " (Lichess rate-limited the request)"
+            print(
+                f"Challenge attempt {attempts} failed{rate_limit_note}: {exc}. Retrying in {wait_time}s..."
+            )
             time.sleep(wait_time)
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    return isinstance(exc, requests.HTTPError) and getattr(exc, "response", None) is not None and exc.response.status_code == 429
+
+
+def _retry_delay_for_exception(exc: BaseException, base_wait: int, attempts: int) -> int:
+    wait_time = max(1, base_wait)
+    if not isinstance(exc, requests.HTTPError):
+        return wait_time
+
+    response = getattr(exc, "response", None)
+    if response is None or response.status_code != 429:
+        return wait_time
+
+    retry_after_header = response.headers.get("Retry-After") if response.headers else None
+    parsed_wait: Optional[int] = None
+    if retry_after_header:
+        try:
+            parsed_wait = int(float(retry_after_header))
+        except ValueError:
+            parsed_wait = None
+
+    if parsed_wait is not None:
+        wait_time = max(wait_time, parsed_wait)
+    else:
+        wait_time = max(wait_time, base_wait * (attempts + 1))
+
+    return wait_time
 
 
 def _merge_game_metadata(game: Dict, challenge: Optional[Dict], opponent_fallback: str) -> Dict:

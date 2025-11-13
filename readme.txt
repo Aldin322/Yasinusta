@@ -70,9 +70,12 @@ For repeated sparring, supply
 ``--games`` to automatically re-challenge the same opponent, ``--challenge-retries``
 to keep retrying when the player is busy, ``--retry-wait`` to control how long to
 wait between those retries, and ``--pause-between-games`` to control how long the
-script waits before the next challenge.  Each finished game now prints a short
-summary (win/loss/draw, end status, and move count) so you can quickly confirm
-that the bot performed as expected.
+script waits before the next challenge.  If Lichess ever responds with HTTP 429
+while you're issuing back-to-back challenges, the helper now respects the
+``Retry-After`` hint (or exponentially increases the wait) before retrying so you
+don't keep hammering the API.  Each finished game now prints a short summary
+(win/loss/draw, end status, and move count) so you can quickly confirm that the
+bot performed as expected.
 
 Engine behavior
 ---------------
