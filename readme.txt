@@ -51,6 +51,7 @@ for a moment.  If Lichess expires the challenge record the moment it turns into
 a game (returning HTTP 404), the helper scans the playing feed to recover the
 newly created game ID automatically, so you no longer get stuck in "Waiting for
 the game to start" limbo when the opponent accepts instantly.
+Once the real game ID is known the helper now speaks the NDJSON format that the ``/api/bot/game/stream/{gameId}`` endpoint actually returns, so the board stream opens immediately and the engine produces its reply right away instead of waiting for Server-Sent Events frames that never arrive.
 For repeated sparring, supply
 ``--games`` to automatically re-challenge the same opponent, ``--challenge-retries``
 to keep retrying when the player is busy, ``--retry-wait`` to control how long to

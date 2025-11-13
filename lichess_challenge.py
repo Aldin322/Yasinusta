@@ -36,10 +36,12 @@ def _auth_headers(token: str) -> Dict[str, str]:
     }
 
 
-def _stream_sse(response: requests.Response) -> Iterator[Dict]:
-    """Yield JSON payloads from a Server-Sent Events response."""
+def _stream_json_events(response: requests.Response) -> Iterator[Dict]:
+    """Yield JSON payloads from either SSE or NDJSON streams."""
 
     buffer = ""
+    sse_mode: Optional[bool] = None
+
     for raw_line in response.iter_lines():
         if raw_line is None:
             continue
@@ -48,25 +50,47 @@ def _stream_sse(response: requests.Response) -> Iterator[Dict]:
             line = raw_line.decode("utf-8", errors="replace").strip()
         else:
             line = raw_line.strip()
+
         if not line:
-            if buffer:
-                try:
-                    yield json.loads(buffer)
-                except json.JSONDecodeError as exc:  # pragma: no cover - defensive
-                    raise RuntimeError(f"Malformed SSE payload from Lichess: {buffer}") from exc
-                buffer = ""
+            if sse_mode:
+                if buffer:
+                    try:
+                        yield json.loads(buffer)
+                    except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+                        raise RuntimeError(
+                            f"Malformed SSE payload from Lichess: {buffer}"
+                        ) from exc
+                    buffer = ""
             continue
 
         if line.startswith(":"):
-            # Comment/keep-alive
+            # Comment/keep-alive (SSE only)
             continue
 
         if line.startswith("data:"):
+            sse_mode = True
             payload = line[len("data:") :].strip()
             if payload:
                 buffer += payload
+            continue
 
-    if buffer:
+        if sse_mode is None:
+            # No delimiter hints yet; detect NDJSON vs SSE by inspecting the line.
+            if line.startswith("{") or line.startswith("["):
+                sse_mode = False
+            else:
+                sse_mode = True
+
+        if sse_mode:
+            buffer += line
+            continue
+
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+            raise RuntimeError(f"Malformed NDJSON payload from Lichess: {line}") from exc
+
+    if sse_mode and buffer:
         try:
             yield json.loads(buffer)
         except json.JSONDecodeError as exc:  # pragma: no cover - defensive
@@ -297,9 +321,10 @@ def _stream_board(token: str, game_id: str) -> Iterable[Dict]:
         f"{LICHESS_API}/api/bot/game/stream/{game_id}",
         headers=_auth_headers(token),
         stream=True,
+        timeout=30,
     ) as response:
         response.raise_for_status()
-        yield from _stream_sse(response)
+        yield from _stream_json_events(response)
 
 
 def _submit_move(token: str, game_id: str, move: chess.Move) -> None:
