@@ -137,6 +137,17 @@ ISOLATED_PAWN_PENALTY = 18
 BACKWARD_PAWN_PENALTY = 14
 OUTPOST_BONUS = 22
 CENTER_CONTROL_BONUS = 4
+MINOR_DEVELOPMENT_PENALTY = 16
+DEVELOPMENT_SQUARES = {
+    chess.WHITE: {
+        chess.KNIGHT: (chess.B1, chess.G1),
+        chess.BISHOP: (chess.C1, chess.F1),
+    },
+    chess.BLACK: {
+        chess.KNIGHT: (chess.B8, chess.G8),
+        chess.BISHOP: (chess.C8, chess.F8),
+    },
+}
 EXTENDED_CENTER = chess.SquareSet(
     chess.BB_C3
     | chess.BB_D3
@@ -360,10 +371,23 @@ class SacrificeBot:
     def _center_control_bonus(self, board: chess.Board, color: chess.Color) -> float:
         control = 0
         for square in EXTENDED_CENTER:
-            piece = board.piece_at(square)
-            if piece and piece.color == color:
+            if board.is_attacked_by(color, square):
                 control += CENTER_CONTROL_BONUS
         return float(control)
+
+    def _development_penalty(
+        self, board: chess.Board, color: chess.Color, endgame_phase: float
+    ) -> float:
+        weight = 1.0 - endgame_phase
+        if weight <= 0:
+            return 0.0
+        penalty = 0.0
+        for piece_type, squares in DEVELOPMENT_SQUARES[color].items():
+            for square in squares:
+                piece = board.piece_at(square)
+                if piece and piece.color == color and piece.piece_type == piece_type:
+                    penalty += MINOR_DEVELOPMENT_PENALTY
+        return penalty * weight
 
     def _king_safety_score(self, board: chess.Board, color: chess.Color, endgame_phase: float) -> float:
         king_square = board.king(color)
@@ -406,6 +430,7 @@ class SacrificeBot:
                 + self._outpost_bonus(board, color)
                 + self._center_control_bonus(board, color)
                 - self._pawn_structure_penalty(board, color)
+                - self._development_penalty(board, color, endgame_phase)
             )
             score += sign * (material + positional + extras)
         return score

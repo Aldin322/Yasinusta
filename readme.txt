@@ -87,8 +87,9 @@ Engine behavior
 * Scores are reported in centipawns from the side to move's perspective.
 * Evaluation mixes classical piece-square values with bishop-pair rewards,
   mobility, rook open-file bonuses, king-safety/pawn-shield heuristics, passed
-  pawns that scale into the endgame, outpost detection for minor pieces, center
-  control tracking, and doubled/isolated/backward pawn penalties so the search
+  pawns that scale into the endgame, outpost detection for minor pieces,
+  attack-based center control tracking, development penalties for idle knights
+  and bishops, and doubled/isolated/backward pawn penalties so the search
   understands complex middlegame structures instead of dropping material to
   simple positional cues.
 * The ``sacrifice_margin`` argument controls how close two moves must score for
