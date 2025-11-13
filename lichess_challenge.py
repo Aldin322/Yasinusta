@@ -461,7 +461,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser.add_argument("--clock", type=int, default=5, help="Base time in minutes")
     parser.add_argument("--increment", type=int, default=3, help="Increment in seconds")
     parser.add_argument("--rated", action="store_true", help="Play a rated game instead of casual")
-    parser.add_argument("--depth", type=int, default=3, help="Search depth for SacrificeBot")
+    parser.add_argument("--depth", type=int, default=16, help="Search depth for SacrificeBot")
     parser.add_argument(
         "--sacrifice-margin",
         type=int,

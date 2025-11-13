@@ -180,7 +180,7 @@ class TTEntry:
 class SacrificeBot:
     """A chess searcher that prefers sacrificing material when advantageous."""
 
-    def __init__(self, depth: int = 4, sacrifice_margin: int = 40, quiescence_depth: int = 6) -> None:
+    def __init__(self, depth: int = 16, sacrifice_margin: int = 40, quiescence_depth: int = 6) -> None:
         """Create a new bot.
 
         Args:
@@ -972,7 +972,7 @@ class SacrificeBot:
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sacrifice-preferring chess searcher")
     parser.add_argument("fen", nargs="?", default=chess.STARTING_FEN, help="FEN string for the position")
-    parser.add_argument("--depth", type=int, default=4, help="Search depth in plies")
+    parser.add_argument("--depth", type=int, default=16, help="Search depth in plies")
     parser.add_argument(
         "--moves",
         nargs="*",

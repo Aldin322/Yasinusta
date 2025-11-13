@@ -14,7 +14,7 @@ Getting started
 
 1. Create and activate a Python 3.11+ virtual environment.
 2. Install dependencies: ``pip install -r requirements.txt``.
-3. Run a sample search from the initial position (depth 4 by default):
+3. Run a sample search from the initial position (depth 16 by default):
 
    ``python sacrifice_bot.py``
 
