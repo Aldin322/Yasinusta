@@ -11,8 +11,9 @@ from __future__ import annotations
 import argparse
 import math
 import time
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import DefaultDict, Dict, List, Optional, Tuple
 
 import chess
 
@@ -102,6 +103,15 @@ class SearchResult:
     sacrifices: float
 
 
+@dataclass
+class TTEntry:
+    depth: int
+    score: float
+    sacrifices: float
+    node_type: str  # "exact", "lower", "upper"
+    move: Optional[chess.Move]
+
+
 class SacrificeBot:
     """A chess searcher that prefers sacrificing material when advantageous."""
 
@@ -129,6 +139,10 @@ class SacrificeBot:
         self.root_color = chess.WHITE
         self.initial_material = 0
         self._deadline: Optional[float] = None
+        self._tt: Dict[int, TTEntry] = {}
+        self._killer_moves: DefaultDict[int, List[chess.Move]] = defaultdict(list)
+        self._history_scores: DefaultDict[Tuple[int, int], int] = defaultdict(int)
+        self._principal_variation: List[chess.Move] = []
 
     # ------------------------------------------------------------------
     # Evaluation helpers
@@ -203,6 +217,10 @@ class SacrificeBot:
         self.initial_material = self._material_score(board, self.root_color)
 
         self._deadline = None
+        self._tt.clear()
+        self._killer_moves.clear()
+        self._history_scores.clear()
+        self._principal_variation.clear()
         use_time_management = False
         if time_remaining_ms is not None:
             budget = self._time_budget(time_remaining_ms, increment_ms)
@@ -225,6 +243,7 @@ class SacrificeBot:
             except SearchTimeout:
                 break
             best_result = result
+            self._update_principal_variation(board)
             depth += 1 if use_time_management else max_depth  # exit loop when fixed depth
 
         if best_result.move is None:
@@ -235,10 +254,36 @@ class SacrificeBot:
 
         return best_result
 
-    def _order_moves(self, board: chess.Board) -> List[chess.Move]:
-        def move_score(move: chess.Move) -> Tuple[int, int]:
-            # Captures and checking moves are usually more critical – score them higher.
-            return (int(board.is_capture(move)), int(board.gives_check(move)))
+    def _order_moves(
+        self,
+        board: chess.Board,
+        ply: int,
+        tt_move: Optional[chess.Move] = None,
+        pv_move: Optional[chess.Move] = None,
+    ) -> List[chess.Move]:
+        killer_moves = self._killer_moves.get(ply, [])
+
+        def move_score(move: chess.Move) -> Tuple[int, float]:
+            score = 0
+            if move == pv_move:
+                score += 10000
+            if move == tt_move:
+                score += 9000
+            if move in killer_moves:
+                score += 4000
+            if board.is_capture(move):
+                victim = board.piece_type_at(move.to_square)
+                if victim is None and board.is_en_passant(move):
+                    victim = chess.PAWN
+                attacker = board.piece_type_at(move.from_square)
+                victim_value = PIECE_VALUES.get(victim, 0)
+                attacker_value = PIECE_VALUES.get(attacker, 1)
+                score += 3000 + victim_value - attacker_value // 10
+            if board.gives_check(move):
+                score += 200
+            history_key = (move.from_square, move.to_square)
+            score += self._history_scores.get(history_key, 0)
+            return (score, move.to_square)
 
         return sorted(board.legal_moves, key=move_score, reverse=True)
 
@@ -250,10 +295,17 @@ class SacrificeBot:
         alpha = -math.inf
         beta = math.inf
 
-        for move in self._order_moves(board):
+        tt_entry = self._tt.get(board.transposition_key())
+        pv_move = self._principal_variation[0] if self._principal_variation else None
+        for move in self._order_moves(
+            board,
+            ply=0,
+            tt_move=tt_entry.move if tt_entry else None,
+            pv_move=pv_move,
+        ):
             self._check_time()
             board.push(move)
-            score, sacrifices = self._search(board, depth - 1, alpha, beta, 0)
+            score, sacrifices = self._search(board, depth - 1, alpha, beta, ply=1, quiescence_level=0)
             board.pop()
 
             if self._is_better(score, sacrifices, best_score, best_sacrifices, maximizing=True):
@@ -271,6 +323,7 @@ class SacrificeBot:
         depth: int,
         alpha: float,
         beta: float,
+        ply: int,
         quiescence_level: int,
     ) -> Tuple[float, float]:
         self._check_time()
@@ -286,18 +339,41 @@ class SacrificeBot:
         if depth == 0:
             return self._quiescence(board, alpha, beta, quiescence_level)
 
+        key = board.transposition_key()
+        entry = self._tt.get(key)
+        tt_move = entry.move if entry else None
+        alpha_orig = alpha
+        beta_orig = beta
+        if entry and entry.depth >= depth:
+            if entry.node_type == "exact":
+                return entry.score, entry.sacrifices
+            if entry.node_type == "lower" and entry.score >= beta:
+                return entry.score, entry.sacrifices
+            if entry.node_type == "upper" and entry.score <= alpha:
+                return entry.score, entry.sacrifices
+
         maximizing = board.turn == self.root_color
         best_score = -math.inf if maximizing else math.inf
         best_sacrifices = -math.inf if maximizing else math.inf
 
-        for move in self._order_moves(board):
+        pv_move = self._principal_variation[ply] if ply < len(self._principal_variation) else None
+        best_move = tt_move if tt_move in board.legal_moves else None
+        for move in self._order_moves(board, ply, tt_move=tt_move, pv_move=pv_move):
             board.push(move)
-            child_score, child_sacrifices = self._search(board, depth - 1, alpha, beta, quiescence_level)
+            child_score, child_sacrifices = self._search(
+                board,
+                depth - 1,
+                alpha,
+                beta,
+                ply + 1,
+                quiescence_level,
+            )
             board.pop()
 
             if self._is_better(child_score, child_sacrifices, best_score, best_sacrifices, maximizing):
                 best_score = child_score
                 best_sacrifices = child_sacrifices
+                best_move = move
 
             if maximizing:
                 alpha = max(alpha, best_score)
@@ -305,7 +381,29 @@ class SacrificeBot:
                 beta = min(beta, best_score)
 
             if beta <= alpha:
+                if not board.is_capture(move):
+                    killers = self._killer_moves[ply]
+                    if move in killers:
+                        killers.remove(move)
+                    killers.insert(0, move)
+                    del killers[2:]
+                    history_key = (move.from_square, move.to_square)
+                    self._history_scores[history_key] += depth * depth
                 break
+
+        node_type = "exact"
+        if best_score <= alpha_orig:
+            node_type = "upper"
+        elif best_score >= beta_orig:
+            node_type = "lower"
+
+        self._tt[key] = TTEntry(
+            depth=depth,
+            score=best_score,
+            sacrifices=best_sacrifices,
+            node_type=node_type,
+            move=best_move,
+        )
 
         return best_score, best_sacrifices
 
@@ -393,6 +491,22 @@ class SacrificeBot:
                 return True
         return False
 
+    def _update_principal_variation(self, board: chess.Board) -> None:
+        self._principal_variation.clear()
+        probe = board.copy()
+        for _ in range(self.depth * 2):
+            entry = self._tt.get(probe.transposition_key())
+            if not entry or entry.move is None:
+                break
+            move = entry.move
+            if move not in probe.legal_moves:
+                break
+            self._principal_variation.append(move)
+            probe.push(move)
+
+    def principal_variation(self) -> List[chess.Move]:
+        return list(self._principal_variation)
+
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sacrifice-preferring chess searcher")
@@ -425,6 +539,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     print(f"Best move: {result.move.uci()}")
     print(f"Score: {result.score:.1f} centipawns")
     print(f"Sacrifice score: {result.sacrifices} centipawns of our material given up")
+    pv = [move.uci() for move in bot.principal_variation()]
+    if pv:
+        print("Principal variation:", " ".join(pv))
 
 
 if __name__ == "__main__":

@@ -41,7 +41,13 @@ The script expects your bot token via the ``--token`` flag or the
 once the opponent accepts.  Use ``--depth`` and ``--sacrifice-margin`` if you
 want to tweak the engine parameters, and pass ``--rated`` to play rated games.
 If Lichess rejects the challenge, the CLI now prints the exact error reported by
-the API instead of crashing with a ``KeyError``.
+the API instead of crashing with a ``KeyError``.  For repeated sparring, supply
+``--games`` to automatically re-challenge the same opponent, ``--challenge-retries``
+to keep retrying when the player is busy, ``--retry-wait`` to control how long to
+wait between those retries, and ``--pause-between-games`` to control how long the
+script waits before the next challenge.  Each finished game now prints a short
+summary (win/loss/draw, end status, and move count) so you can quickly confirm
+that the bot performed as expected.
 
 Engine behavior
 ---------------
@@ -50,9 +56,13 @@ Engine behavior
   parameter when instantiating ``SacrificeBot``.  When a clock is provided it
   will iteratively deepen until it either reaches that depth or the allocated
   time budget expires.
-* Move ordering prioritizes captures and checks to improve pruning.
+* Move ordering prioritizes principal-variation moves, transposition-table hits,
+  killers, history moves, captures, and checks to improve pruning.
 * Quiescence search keeps following forcing moves (captures/checks) at the leaf
   nodes so the evaluation only happens after the position settles.
 * Scores are reported in centipawns from the side to move's perspective.
 * The ``sacrifice_margin`` argument controls how close two moves must score for
   the engine to prefer the line that gives up more of its own material.
+* Iterative deepening uses a shared transposition table so each new depth reuses
+  the best line found so far; the CLI prints that principal variation for easy
+  analysis after every standalone search.

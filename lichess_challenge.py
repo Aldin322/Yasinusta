@@ -98,6 +98,28 @@ def _challenge_player(
     return challenge
 
 
+def _challenge_with_retries(
+    token: str,
+    opponent: str,
+    clock: int,
+    increment: int,
+    rated: bool,
+    retries: int,
+    retry_wait: int,
+) -> Dict:
+    attempts = 0
+    while True:
+        try:
+            return _challenge_player(token, opponent, clock, increment, rated)
+        except (RuntimeError, requests.RequestException) as exc:
+            attempts += 1
+            if attempts > max(0, retries):
+                raise
+            wait_time = max(1, retry_wait)
+            print(f"Challenge attempt {attempts} failed: {exc}. Retrying in {wait_time}s...")
+            time.sleep(wait_time)
+
+
 def _wait_for_game(token: str, challenge_id: str, opponent: str) -> Dict:
     """Block until the specific challenge turns into a game and return it."""
 
@@ -147,8 +169,9 @@ def _should_move(board: chess.Board, my_color: chess.Color) -> bool:
     return board.turn == my_color and not board.is_game_over()
 
 
-def _drive_game(token: str, game_id: str, my_color: chess.Color, bot: SacrificeBot) -> None:
+def _drive_game(token: str, game_id: str, my_color: chess.Color, bot: SacrificeBot) -> Dict:
     board = chess.Board()
+    final_state: Dict = {}
 
     for event in _stream_board(token, game_id):
         event_type = event.get("type")
@@ -176,8 +199,27 @@ def _drive_game(token: str, game_id: str, my_color: chess.Color, bot: SacrificeB
 
         status = state.get("status")
         if status and status != "started":
+            final_state = state
             break
 
+    return final_state
+
+
+def _summarize_game_outcome(state: Optional[Dict], my_color: chess.Color) -> str:
+    if not state:
+        return "Game concluded, but no final status was received from Lichess."
+
+    status = state.get("status", "unknown")
+    winner = state.get("winner")
+    if winner is None:
+        outcome = "draw"
+    elif (winner == "white" and my_color == chess.WHITE) or (winner == "black" and my_color == chess.BLACK):
+        outcome = "win"
+    else:
+        outcome = "loss"
+
+    moves_played = len(state.get("moves", "").split())
+    return f"Result: {outcome} (status: {status}, moves played: {moves_played})."
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Challenge a Lichess user with SacrificeBot")
@@ -193,6 +235,25 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         default=40,
         help="Sacrifice margin (centipawns) forwarded to SacrificeBot",
     )
+    parser.add_argument("--games", type=int, default=1, help="Number of consecutive games to play")
+    parser.add_argument(
+        "--challenge-retries",
+        type=int,
+        default=3,
+        help="How many times to retry sending a challenge before giving up",
+    )
+    parser.add_argument(
+        "--retry-wait",
+        type=int,
+        default=10,
+        help="Seconds to wait between challenge retries",
+    )
+    parser.add_argument(
+        "--pause-between-games",
+        type=int,
+        default=5,
+        help="Seconds to wait before starting the next game",
+    )
     return parser.parse_args(argv)
 
 
@@ -203,20 +264,39 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         raise SystemExit("Please supply --token or set the LICHESS_TOKEN environment variable")
 
     bot = SacrificeBot(depth=args.depth, sacrifice_margin=args.sacrifice_margin)
-    print(f"Challenging {args.opponent} for a {args.clock}+{args.increment} game...")
-    try:
-        challenge = _challenge_player(token, args.opponent, args.clock, args.increment, args.rated)
-    except RuntimeError as exc:
-        raise SystemExit(str(exc)) from exc
-    except requests.RequestException as exc:  # pragma: no cover - network errors
-        raise SystemExit(f"Failed to send challenge: {exc}") from exc
-    challenge_id = challenge["id"]
-    print(f"Challenge created (id: {challenge_id}). Waiting for the game to start...")
-    game = _wait_for_game(token, challenge_id, args.opponent)
-    my_color = chess.WHITE if game.get("color") == "white" else chess.BLACK
-    print(f"Game {game['id']} started. Playing as {'White' if my_color == chess.WHITE else 'Black'}.")
-    _drive_game(token, game["id"], my_color, bot)
-    print("Game finished.")
+    total_games = max(1, args.games)
+
+    for game_index in range(total_games):
+        print(f"=== Match {game_index + 1}/{total_games} ===")
+        print(f"Challenging {args.opponent} for a {args.clock}+{args.increment} game...")
+        try:
+            challenge = _challenge_with_retries(
+                token,
+                args.opponent,
+                args.clock,
+                args.increment,
+                args.rated,
+                retries=args.challenge_retries,
+                retry_wait=args.retry_wait,
+            )
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+        except requests.RequestException as exc:  # pragma: no cover - network errors
+            raise SystemExit(f"Failed to send challenge: {exc}") from exc
+        challenge_id = challenge["id"]
+        print(f"Challenge created (id: {challenge_id}). Waiting for the game to start...")
+        game = _wait_for_game(token, challenge_id, args.opponent)
+        my_color = chess.WHITE if game.get("color") == "white" else chess.BLACK
+        print(f"Game {game['id']} started. Playing as {'White' if my_color == chess.WHITE else 'Black'}.")
+        final_state = _drive_game(token, game["id"], my_color, bot)
+        print(_summarize_game_outcome(final_state, my_color))
+        print("Game finished.")
+
+        if game_index < total_games - 1:
+            pause = max(0, args.pause_between_games)
+            if pause:
+                print(f"Waiting {pause}s before issuing the next challenge...")
+                time.sleep(pause)
 
 
 if __name__ == "__main__":
