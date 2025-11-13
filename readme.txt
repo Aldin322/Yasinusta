@@ -3,23 +3,24 @@ Sacrifice Bot
 
 This repository contains a lightweight chess engine that can be used as the
 brain for a Lichess bot account.  The main entry point is ``sacrifice_bot.py``
-which runs a conventional alpha-beta search and evaluates positions based on
-material and piece-square tables.  When multiple lines score roughly the same,
-the bot picks the one where it gives up more of its own material – effectively
-choosing the most sacrificial winning continuation.
+which runs a conventional alpha-beta search and evaluates positions using
+material, piece-square tables, mobility, rook-file awareness, king safety, and
+passed-pawn heuristics.  When multiple lines score roughly the same, the bot
+picks the one where it gives up more of its own material – effectively choosing
+the most sacrificial winning continuation.
 
 Getting started
 ---------------
 
 1. Create and activate a Python 3.11+ virtual environment.
 2. Install dependencies: ``pip install -r requirements.txt``.
-3. Run a sample search from the initial position (depth 3 by default):
+3. Run a sample search from the initial position (depth 4 by default):
 
    ``python sacrifice_bot.py``
 
    To analyze a custom FEN and depth, pass the arguments explicitly, for example:
 
-   ``python sacrifice_bot.py "r1bqkbnr/pppp1ppp/2n5/4p3/3PP3/5N2/PPP2PPP/RNBQKB1R w KQkq - 2 4" --depth 4``
+   ``python sacrifice_bot.py "r1bqkbnr/pppp1ppp/2n5/4p3/3PP3/5N2/PPP2PPP/RNBQKB1R w KQkq - 2 4" --depth 5``
 
 4. Wire the ``SacrificeBot`` class into your Lichess bot runner (for example by
    plugging it into ``lichess-bot``'s ``engine.py`` callback) and provide your
@@ -64,14 +65,19 @@ Engine behavior
 ---------------
 
 * Search depth is set through the ``--depth`` CLI option or the ``depth``
-  parameter when instantiating ``SacrificeBot``.  When a clock is provided it
-  will iteratively deepen until it either reaches that depth or the allocated
-  time budget expires.
+  parameter when instantiating ``SacrificeBot``.  When a clock is provided the
+  engine now starts at depth 1 and keeps deepening past the requested depth (up
+  to 32 plies) until the allocated time budget expires, squeezing out extra
+  strength in long games while still obeying the clock.
 * Move ordering prioritizes principal-variation moves, transposition-table hits,
   killers, history moves, captures, and checks to improve pruning.
 * Quiescence search keeps following forcing moves (captures/checks) at the leaf
   nodes so the evaluation only happens after the position settles.
 * Scores are reported in centipawns from the side to move's perspective.
+* Evaluation mixes classical piece-square values with bishop-pair rewards,
+  mobility, rook open-file bonuses, king-safety/pawn-shield heuristics, and
+  passed-pawn bonuses that scale into the endgame, so the search no longer
+  drops material to simple positional cues.
 * The ``sacrifice_margin`` argument controls how close two moves must score for
   the engine to prefer the line that gives up more of its own material.
 * Iterative deepening uses a shared transposition table so each new depth reuses
