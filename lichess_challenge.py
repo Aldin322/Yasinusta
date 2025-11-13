@@ -329,7 +329,7 @@ def _auto_accept_incoming_challenges(token: str, stop_event: threading.Event) ->
                         continue
                     challenge = event.get("challenge") or {}
                     direction = (challenge.get("direction") or "").lower()
-                    if direction != "in":
+                    if direction not in {"in", "incoming"}:
                         continue
                     challenge_id = challenge.get("id")
                     if not challenge_id or challenge_id in accepted_ids:
