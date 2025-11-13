@@ -4,8 +4,8 @@ Sacrifice Bot
 This repository contains a lightweight chess engine that can be used as the
 brain for a Lichess bot account.  The main entry point is ``sacrifice_bot.py``
 which runs a conventional alpha-beta search and evaluates positions using
-material, piece-square tables, mobility, rook-file awareness, king safety, and
-passed-pawn heuristics.  When multiple lines score roughly the same, the bot
+material, piece-square tables, mobility, rook-file awareness, king safety, pawn
+structure, and passed-pawn heuristics.  When multiple lines score roughly the same, the bot
 picks the one where it gives up more of its own material – effectively choosing
 the most sacrificial winning continuation.
 
@@ -24,9 +24,12 @@ Getting started
 
 4. Wire the ``SacrificeBot`` class into your Lichess bot runner (for example by
    plugging it into ``lichess-bot``'s ``engine.py`` callback) and provide your
-   API token via environment variables or a configuration file.  The searcher
-   now performs basic time management automatically – just pass the remaining
-   clock (and increment) when calling ``choose`` if you have it.
+  API token via environment variables or a configuration file.  The searcher
+  now performs adaptive time management automatically – just pass the remaining
+  clock (and increment) when calling ``choose`` if you have it.  The engine now
+  spends only a fraction of the early-game clock (where many pieces remain) and
+  relaxes the budget as the position simplifies, so it responds quickly out of
+  the opening instead of burning most of its time on move one.
 
 Playing test matches on Lichess
 -------------------------------
@@ -75,11 +78,16 @@ Engine behavior
   nodes so the evaluation only happens after the position settles.
 * Scores are reported in centipawns from the side to move's perspective.
 * Evaluation mixes classical piece-square values with bishop-pair rewards,
-  mobility, rook open-file bonuses, king-safety/pawn-shield heuristics, and
-  passed-pawn bonuses that scale into the endgame, so the search no longer
-  drops material to simple positional cues.
+  mobility, rook open-file bonuses, king-safety/pawn-shield heuristics, passed
+  pawns that scale into the endgame, outpost detection for minor pieces, center
+  control tracking, and doubled/isolated/backward pawn penalties so the search
+  understands complex middlegame structures instead of dropping material to
+  simple positional cues.
 * The ``sacrifice_margin`` argument controls how close two moves must score for
   the engine to prefer the line that gives up more of its own material.
-* Iterative deepening uses a shared transposition table so each new depth reuses
-  the best line found so far; the CLI prints that principal variation for easy
-  analysis after every standalone search.
+* Iterative deepening now rides on top of aspiration windows, null-move
+  pruning, and late-move reductions.  Combined with the shared transposition
+  table, PV tracking, and killer/history ordering, each new depth reuses the
+  best line found so far and prunes hopeless branches extremely quickly.  The
+  CLI prints that principal variation for easy analysis after every standalone
+  search.

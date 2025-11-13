@@ -110,6 +110,29 @@ PASSED_PAWN_BONUS = [0, 10, 20, 35, 60, 90, 140, 0]
 MOBILITY_WEIGHT = 2
 PAWN_SHIELD_BONUS = 8
 KING_ATTACK_PENALTY = 15
+DOUBLED_PAWN_PENALTY = 12
+ISOLATED_PAWN_PENALTY = 18
+BACKWARD_PAWN_PENALTY = 14
+OUTPOST_BONUS = 22
+CENTER_CONTROL_BONUS = 4
+EXTENDED_CENTER = chess.SquareSet(
+    chess.BB_C3
+    | chess.BB_D3
+    | chess.BB_E3
+    | chess.BB_F3
+    | chess.BB_C4
+    | chess.BB_D4
+    | chess.BB_E4
+    | chess.BB_F4
+    | chess.BB_C5
+    | chess.BB_D5
+    | chess.BB_E5
+    | chess.BB_F5
+    | chess.BB_C6
+    | chess.BB_D6
+    | chess.BB_E6
+    | chess.BB_F6
+)
 
 
 class SearchTimeout(Exception):
@@ -262,6 +285,64 @@ class SacrificeBot:
         move_count = sum(1 for _ in temp.legal_moves)
         return move_count * MOBILITY_WEIGHT
 
+    def _pawn_structure_penalty(self, board: chess.Board, color: chess.Color) -> float:
+        penalty = 0.0
+        pawns = board.pieces(chess.PAWN, color)
+        files = [0] * 8
+        for square in pawns:
+            files[chess.square_file(square)] += 1
+        for count in files:
+            if count > 1:
+                penalty += (count - 1) * DOUBLED_PAWN_PENALTY
+
+        for square in pawns:
+            file_index = chess.square_file(square)
+            neighbors = []
+            if file_index > 0:
+                neighbors.append(files[file_index - 1])
+            if file_index < 7:
+                neighbors.append(files[file_index + 1])
+            if all(count == 0 for count in neighbors):
+                penalty += ISOLATED_PAWN_PENALTY
+
+            rank_index = chess.square_rank(square)
+            next_rank = rank_index + (1 if color == chess.WHITE else -1)
+            if 0 <= next_rank < 8:
+                forward_square = chess.square(file_index, next_rank)
+                blocker = board.piece_at(forward_square)
+                if blocker and blocker.color != color and blocker.piece_type == chess.PAWN:
+                    penalty += BACKWARD_PAWN_PENALTY
+
+        return penalty
+
+    def _outpost_bonus(self, board: chess.Board, color: chess.Color) -> float:
+        bonus = 0.0
+        enemy_pawns = board.pieces(chess.PAWN, not color)
+        friendly_pawns = board.pieces(chess.PAWN, color)
+        enemy_attacks = 0
+        friendly_attacks = 0
+        for pawn in enemy_pawns:
+            enemy_attacks |= chess.BB_PAWN_ATTACKS[not color][pawn]
+        for pawn in friendly_pawns:
+            friendly_attacks |= chess.BB_PAWN_ATTACKS[color][pawn]
+
+        for piece_type in (chess.KNIGHT, chess.BISHOP):
+            for square in board.pieces(piece_type, color):
+                mask = chess.BB_SQUARES[square]
+                if enemy_attacks & mask:
+                    continue
+                if friendly_attacks & mask:
+                    bonus += OUTPOST_BONUS
+        return bonus
+
+    def _center_control_bonus(self, board: chess.Board, color: chess.Color) -> float:
+        control = 0
+        for square in EXTENDED_CENTER:
+            piece = board.piece_at(square)
+            if piece and piece.color == color:
+                control += CENTER_CONTROL_BONUS
+        return float(control)
+
     def _king_safety_score(self, board: chess.Board, color: chess.Color, endgame_phase: float) -> float:
         king_square = board.king(color)
         if king_square is None:
@@ -300,6 +381,9 @@ class SacrificeBot:
                 + self._passed_pawn_bonus(board, color, endgame_phase)
                 + self._mobility_term(board, color)
                 + self._king_safety_score(board, color, endgame_phase)
+                + self._outpost_bonus(board, color)
+                + self._center_control_bonus(board, color)
+                - self._pawn_structure_penalty(board, color)
             )
             score += sign * (material + positional + extras)
         return score
@@ -377,18 +461,24 @@ class SacrificeBot:
         )
         return fallback
 
-    def _time_budget(self, time_remaining_ms: int, increment_ms: int) -> int:
+    def _time_budget(self, board: chess.Board, time_remaining_ms: int, increment_ms: int) -> int:
         """Return how many milliseconds to spend on the current move."""
 
         if time_remaining_ms <= 0:
             return 0
 
-        # Keep a comfortable safety margin (at least 200 ms or 10% of the clock).
-        safety_margin = max(200, int(time_remaining_ms * 0.1))
+        phase = self._game_phase(board)
+        moves_to_go = 10 + int(30 * (1.0 - phase))
+        moves_to_go = max(8, moves_to_go)
+        per_move = time_remaining_ms / moves_to_go
+        safety_margin = max(200, int(time_remaining_ms * 0.05))
         usable = max(0, time_remaining_ms - safety_margin)
-        # Spend up to 5% of the remaining time plus half of the increment.
-        allocation = int(time_remaining_ms * 0.05) + increment_ms // 2
-        allocation = max(50, allocation)
+
+        allocation = int(per_move + increment_ms * 0.6)
+        allocation = max(60, allocation)
+        hard_cap = int(time_remaining_ms * 0.7)
+        if hard_cap > 0:
+            allocation = min(allocation, hard_cap)
         return min(usable, allocation)
 
     # ------------------------------------------------------------------
@@ -420,7 +510,7 @@ class SacrificeBot:
         self._last_completed_depth = 0
         use_time_management = False
         if time_remaining_ms is not None:
-            budget = self._time_budget(time_remaining_ms, increment_ms)
+            budget = self._time_budget(board, time_remaining_ms, increment_ms)
             if budget > 0:
                 self._deadline = time.perf_counter() + budget / 1000
                 use_time_management = True
@@ -432,18 +522,57 @@ class SacrificeBot:
         best_result = SearchResult(None, -math.inf, -math.inf)
         if use_time_management:
             start_depth = 1
-            max_depth = min(self.depth + 6, 32)
+            max_depth = min(self.depth + 8, 48)
         else:
             start_depth = self.depth
             max_depth = self.depth
 
         depth = start_depth
+        timed_out = False
         while depth <= max_depth:
-            try:
-                result = self._search_root(board, depth)
-            except SearchTimeout:
+            aspiration_alpha = -math.inf
+            aspiration_beta = math.inf
+            window = 50
+            if use_time_management and depth > 1 and best_result.move is not None:
+                guess = best_result.score
+                aspiration_alpha = guess - window
+                aspiration_beta = guess + window
+
+            attempt_alpha = aspiration_alpha
+            attempt_beta = aspiration_beta
+            current_window = window
+            while True:
+                try:
+                    result, fail_low, fail_high = self._search_root(
+                        board,
+                        depth,
+                        alpha=attempt_alpha,
+                        beta=attempt_beta,
+                    )
+                except SearchTimeout:
+                    timed_out = True
+                    break
+
+                if fail_low and attempt_alpha != -math.inf:
+                    attempt_alpha -= current_window
+                    current_window *= 2
+                    if attempt_alpha <= -20000:
+                        attempt_alpha = -math.inf
+                    continue
+
+                if fail_high and attempt_beta != math.inf:
+                    attempt_beta += current_window
+                    current_window *= 2
+                    if attempt_beta >= 20000:
+                        attempt_beta = math.inf
+                    continue
+
+                best_result = result
                 break
-            best_result = result
+
+            if timed_out:
+                break
+
             self._last_completed_depth = depth
             self._update_principal_variation(board)
             if not use_time_management:
@@ -491,13 +620,19 @@ class SacrificeBot:
 
         return sorted(board.legal_moves, key=move_score, reverse=True)
 
-    def _search_root(self, board: chess.Board, depth: int) -> SearchResult:
+    def _search_root(
+        self,
+        board: chess.Board,
+        depth: int,
+        alpha: float = -math.inf,
+        beta: float = math.inf,
+    ) -> Tuple[SearchResult, bool, bool]:
         best_move = None
         best_score = -math.inf
         best_sacrifices = -math.inf
 
-        alpha = -math.inf
-        beta = math.inf
+        alpha_start = alpha
+        beta_start = beta
 
         tt_entry = self._tt.get(self._board_hash(board))
         pv_move = self._principal_variation[0] if self._principal_variation else None
@@ -519,7 +654,9 @@ class SacrificeBot:
 
             alpha = max(alpha, best_score)
 
-        return SearchResult(best_move, best_score, best_sacrifices)
+        fail_low = best_score <= alpha_start and alpha_start != -math.inf
+        fail_high = best_score >= beta_start and beta_start != math.inf
+        return SearchResult(best_move, best_score, best_sacrifices), fail_low, fail_high
 
     def _search(
         self,
@@ -548,6 +685,27 @@ class SacrificeBot:
         tt_move = entry.move if entry else None
         alpha_orig = alpha
         beta_orig = beta
+
+        if (
+            depth >= 2
+            and not board.is_check()
+            and len(board.piece_map()) > 6
+            and not board.is_repetition()
+        ):
+            reduction = 2 if depth > 5 else 1
+            board.push(chess.Move.null())
+            null_score, _ = self._search(
+                board,
+                max(0, depth - 1 - reduction),
+                beta - 1,
+                beta,
+                ply + 1,
+                quiescence_level,
+            )
+            board.pop()
+            if null_score >= beta:
+                return null_score, self._sacrifice_score(board)
+
         if entry and entry.depth >= depth:
             if entry.node_type == "exact":
                 return entry.score, entry.sacrifices
@@ -562,17 +720,43 @@ class SacrificeBot:
 
         pv_move = self._principal_variation[ply] if ply < len(self._principal_variation) else None
         best_move = tt_move if tt_move in board.legal_moves else None
+        move_index = 0
         for move in self._order_moves(board, ply, tt_move=tt_move, pv_move=pv_move):
+            move_index += 1
+            is_capture = board.is_capture(move)
+            gives_check = board.gives_check(move)
+            reduction = 0
+            if (
+                depth >= 3
+                and move_index > 3
+                and not is_capture
+                and not gives_check
+                and not board.is_check()
+            ):
+                reduction = 1
+
             board.push(move)
             child_score, child_sacrifices = self._search(
                 board,
-                depth - 1,
+                max(0, depth - 1 - reduction),
                 alpha,
                 beta,
                 ply + 1,
                 quiescence_level,
             )
             board.pop()
+
+            if reduction and self._is_better(child_score, child_sacrifices, best_score, best_sacrifices, maximizing):
+                board.push(move)
+                child_score, child_sacrifices = self._search(
+                    board,
+                    depth - 1,
+                    alpha,
+                    beta,
+                    ply + 1,
+                    quiescence_level,
+                )
+                board.pop()
 
             if self._is_better(child_score, child_sacrifices, best_score, best_sacrifices, maximizing):
                 best_score = child_score
@@ -585,7 +769,7 @@ class SacrificeBot:
                 beta = min(beta, best_score)
 
             if beta <= alpha:
-                if not board.is_capture(move):
+                if not is_capture:
                     killers = self._killer_moves[ply]
                     if move in killers:
                         killers.remove(move)
